@@ -6,14 +6,26 @@ Both sides change only together. Bump `v` on breaking changes.
 
 ## Transport
 
-The host listens on `127.0.0.1`, on two OS-assigned ports that carry the same
-records:
+The host listens on two OS-assigned ports that carry the same records:
 
-- **`port`: JSONL over TCP**, for Node clients (`inspect`, the tests, another
-  host taking a session over). One JSON object per record, UTF-8, terminated by
-  `\n`. Split on `\n` only. Never treat U+2028/U+2029 as separators.
-- **`wsPort`: WebSocket**, for the mod. A handshake with an `Origin` header (a
-  web page) is refused before the token.
+- **`port`: JSONL over TCP**, on `127.0.0.1` always, for Node clients on the
+  host's machine (`inspect`, the tests, another host taking a session over).
+  One JSON object per record, UTF-8, terminated by `\n`. Split on `\n` only.
+  Never treat U+2028/U+2029 as separators.
+- **`wsPort`: WebSocket**, for the mod, on the listen address (`--listen`,
+  default `127.0.0.1`). The registry's `address` advertises it.
+  - `--listen` takes `127.0.0.1` or a tailnet address (`100.64.0.0/10`,
+    `fd7a:115c:a1e0::/48`), or a name that resolves to one (a remote space's
+    host: its machine's tailnet name, so the Mac can reach it). The host
+    refuses anything else (`0.0.0.0`, `::`, a LAN or public address) and exits
+    2 before it writes a registry entry.
+  - A handshake with an `Origin` header (a web page) is refused (403) before
+    the token.
+  - The handshake carries the chat token in the `x-herdr-chat-token` header.
+    A wrong one is refused (401) on any address, before anything is sent. On a
+    tailnet address the header is required: a handshake without it is refused
+    the same way. On `127.0.0.1` it may be left out (mods before 0.6), and
+    `hello`'s token alone authenticates.
   - Host → mod: a text message carries one or more records, separated by
     `\n` (as in JSONL, with no trailing `\n`). A message is at most 8 MiB.
   - Mod → host: one record per text message, plus `{"t":"ack"}`, which the mod
@@ -48,13 +60,21 @@ On either transport:
 The host writes `<stateDir>/chats/<chat>.json` with mode 0600:
 
 ```json
-{ "v": 1, "chat": "c-1a2b3c4d", "pid": 4242, "port": 51234, "wsPort": 51235, "token": "<64 hex>",
-  "cwd": "/abs/dir", "sessionFile": "/abs/x.jsonl" | null, "terminal": "t7" | null,
+{ "v": 1, "chat": "c-1a2b3c4d", "pid": 4242, "port": 51234, "wsPort": 51235, "address": "127.0.0.1",
+  "token": "<64 hex>", "cwd": "/abs/dir", "sessionFile": "/abs/x.jsonl" | null, "terminal": "t7" | null,
   "startedAt": 1793700000000, "agentVersion": "1.5.0" | null }
 ```
 
 - `stateDir` is passed on the host command line (`--state-dir`). The mod uses
-  `appHome() + "/data/herdr-chat"`.
+  `appHome() + "/data/herdr-chat"`. A remote space's host (started with
+  `hc run --on <machine>`) uses its machine's `machines.<name>.stateDir` from
+  the mod's settings, else the host's default there (`~/.local/state/herdr-chat`);
+  the mod reads the entry with `readTextFile(path, {on: <machine>})`.
+- `address`: where the WebSocket listens, the resolved `--listen` address. The
+  mod connects to `ws://<address>:<wsPort>/` (an IPv6 address in brackets), with
+  the `x-herdr-chat-token` header, for a remote chat. A local chat connects to
+  `127.0.0.1` as before. A host before 0.6 writes no `address` (it means
+  `127.0.0.1`).
 - **Atomic write:** write a temp file, then rename it over the old one.
 - `terminal` is `$HC_TERMINAL_ID` of the host's terminal.
 - On clean exit the host rewrites the file with `pid: null, port: null, wsPort: null` and
