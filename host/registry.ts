@@ -13,6 +13,8 @@ export type RegistryEntry = {
   port: number | null;
   /** WebSocket, for the Herdr mod (protocol.md "Transport"). Absent before 0.4: such a host speaks only JSONL. */
   wsPort?: number | null;
+  /** The address the WebSocket listens on, for the mod to connect to: 127.0.0.1, or a remote host's tailnet address. Absent before 0.6 (= 127.0.0.1). */
+  address?: string;
   token: string;
   cwd: string;
   sessionFile: string | null;

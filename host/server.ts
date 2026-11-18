@@ -5,12 +5,17 @@ import { WebSocketServer, WebSocket } from "ws";
 import { LineFramer, MAX_RECORD_BYTES } from "./framing.ts";
 import type { Chat, Patch, Sink } from "./chat.ts";
 import { hostBuild } from "./build.ts";
+import { LOOPBACK } from "./listen.ts";
+import type { Listen } from "./listen.ts";
+import type { IncomingMessage } from "node:http";
 
 export const PROTOCOL_VERSION = 1;
 const HELLO_TIMEOUT_MS = 5000;
 const MAX_CLIENT_BUFFER = 64 * 1024 * 1024;
 /** Keepalive: a read on Herdr's `net` module fails after ~30 s idle (a mod on the legacy TCP link). */
 const PING_MS = Number(process.env.HERDR_CHAT_PING_MS ?? "15000") || 15000;
+/** The chat token on the WebSocket upgrade (protocol.md "Transport"): required off loopback. */
+export const TOKEN_HEADER = "x-herdr-chat-token";
 
 function tokenMatches(given: unknown, expected: string): boolean {
   if (typeof given !== "string") return false;
@@ -140,18 +145,29 @@ export class ChatServer implements Sink {
     this.pinger.unref();
   }
 
-  async listen(): Promise<{ port: number; wsPort: number }> {
+  /**
+   * JSONL over TCP stays on 127.0.0.1 (the CLI and tools on this machine); the WebSocket
+   * listens on `listen` (listen.ts), whose address the registry advertises.
+   */
+  async listen(listen: Listen = { address: LOOPBACK, loopback: true }): Promise<{ port: number; wsPort: number; address: string }> {
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(0, "127.0.0.1", () => resolve());
+      this.server.listen(0, LOOPBACK, () => resolve());
     });
     const addr = this.server.address();
     this.port = typeof addr === "object" && addr ? addr.port : 0;
     const wss = new WebSocketServer({
-      host: "127.0.0.1", port: 0, maxPayload: MAX_RECORD_BYTES, perMessageDeflate: false,
+      host: listen.address, port: 0, maxPayload: MAX_RECORD_BYTES, perMessageDeflate: false,
       // A browser sends an Origin; Herdr's runtime and other local clients don't. A web
       // page may open a WebSocket to 127.0.0.1, so it never gets as far as the token.
-      verifyClient: (info: { origin?: string }) => !info.origin,
+      // The token header: a wrong one is refused anywhere; off loopback it is required,
+      // so a connection without it is refused before anything is sent.
+      verifyClient: (info: { origin?: string; req: IncomingMessage }, done: (ok: boolean, code?: number) => void) => {
+        if (info.origin) return done(false, 403);
+        const given = info.req.headers[TOKEN_HEADER];
+        if (given === undefined ? !listen.loopback : !tokenMatches(given, this.token)) return done(false, 401);
+        done(true);
+      },
     });
     this.wss = wss;
     await new Promise<void>((resolve, reject) => {
@@ -161,7 +177,7 @@ export class ChatServer implements Sink {
     wss.on("connection", (ws) => this.acceptWs(ws));
     const waddr = wss.address();
     this.wsPort = typeof waddr === "object" && waddr ? waddr.port : 0;
-    return { port: this.port, wsPort: this.wsPort };
+    return { port: this.port, wsPort: this.wsPort, address: listen.address };
   }
 
   /** Stops listening and ends every client; one that doesn't close its side in 500 ms is cut, so a shutdown never waits on a client. */

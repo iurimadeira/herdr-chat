@@ -18,8 +18,10 @@ import { appHomeOf, labelSelf, newChatId, planSubagent } from "./subagent.ts";
 import { readChatConfig } from "./settings.ts";
 import { PaneWatch } from "./panewatch.ts";
 import { hostBuild } from "./build.ts";
+import { resolveListen } from "./listen.ts";
 
-const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
+const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--listen <address>] [--<provider> <cmd>] [-- <agent args>]
+  (--listen: where the WebSocket listens and what the registry advertises: 127.0.0.1 (the default) or a tailnet address or name, for a chat in a remote space; anything else is refused)
   (--app-home: the Herdr app's home, whose app it asks to close its hidden pane once its chat's pane is gone; default $HERDR_APP_HOME, else ~/.config/herdr-app)
   (--provider defaults to the chat's registered provider, else pi; --pi <cmd> or HERDR_CHAT_PI picks the pi binary)
 herdr-chat-host run     [--provider pi|claude|codex] [--session <file>] [--cwd <dir>] [-- <agent args>]
@@ -62,6 +64,8 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   const handOver = Boolean(afterPid && session && (!previous || pidAlive(afterPid)));
   const handModel = handOver ? a.flags.get("model")?.[0] ?? null : null;
   const handThinking = handOver ? a.flags.get("thinking")?.[0] ?? null : null;
+  // Before anything is written: a refused --listen leaves no trace.
+  const listen = await resolveListen(a.flags.get("listen")?.[0]).catch((e: Error) => die(e.message));
   const terminalId = process.env.HC_TERMINAL_ID ?? null;
   const token = randomBytes(32).toString("hex");
   const logDir = join(stateDir, "logs");
@@ -166,7 +170,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
     log(`unhandled rejection: ${(e as Error)?.stack ?? e}`);
   });
 
-  save(await server.listen());
+  save(await server.listen(listen));
   term.line(`herdr-chat-host · chat ${chatId} · ${cwd}`);
   if (extra.hint) term.line(extra.hint);
   if (extra.warning) term.line(`! ${extra.warning}`);
