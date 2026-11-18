@@ -2,6 +2,9 @@
 // take it over (mod new-chat continueAsChat, via `herdr-chat-host tui-session`).
 // Each agent's module says how it finds it (providers/index.ts `tuiSession`).
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * session: the file a chat resumes; model ("provider/id") and thinking: the
@@ -31,6 +34,54 @@ export function processStart(pid: number): number | null {
   } catch {
     return null;
   }
+}
+
+const HOMES = {
+  claude: { variable: "CLAUDE_CONFIG_DIR", fallback: [".claude"] },
+  codex: { variable: "CODEX_HOME", fallback: [".codex"] },
+  pi: { variable: "PI_CODING_AGENT_DIR", fallback: [".pi", "agent"] },
+} as const;
+
+/**
+ * One variable of a process's environment: its value, null when unset (or
+ * empty), undefined when the environment can't be read. Only that variable
+ * is kept: an environment holds tokens.
+ */
+function processVariable(pid: number, name: string): string | null | undefined {
+  const prefix = `${name}=`;
+  if (process.platform === "linux") {
+    let raw: Buffer;
+    try {
+      raw = readFileSync(`/proc/${pid}/environ`);
+    } catch {
+      return undefined;
+    }
+    for (const entry of raw.toString("utf8").split("\0")) if (entry.startsWith(prefix)) return entry.slice(prefix.length) || null;
+    return null;
+  }
+  // macOS: `ps -E` appends a process's environment to its command line, for
+  // the user's own processes (a value with a space is cut there).
+  let line: string;
+  try {
+    line = execFileSync("ps", ["-E", "-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 3000 });
+  } catch {
+    return undefined;
+  }
+  if (!line.trim()) return undefined;
+  const m = new RegExp(`(?:^|\\s)${name}=(\\S*)`).exec(line);
+  return m?.[1] || null;
+}
+
+/**
+ * The agent home a process uses: its CLAUDE_CONFIG_DIR / CODEX_HOME /
+ * PI_CODING_AGENT_DIR, else the default (~/.claude, ~/.codex, ~/.pi/agent).
+ * An environment that can't be read leaves the host's own (as before).
+ */
+export function agentHome(pid: number, agent: keyof typeof HOMES): string {
+  const { variable, fallback } = HOMES[agent];
+  const own = processVariable(pid, variable);
+  const value = own === undefined ? process.env[variable] || null : own;
+  return value ?? join(homedir(), ...fallback);
 }
 
 /** The files the processes have open (`lsof`), or []. */
