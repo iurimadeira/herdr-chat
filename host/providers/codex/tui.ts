@@ -1,13 +1,15 @@
-// A Codex TUI's session: the rollout file it has open (`codex --no-daemon`),
-// else the newest rollout in its folder written since it started (a TUI on the
-// shared daemon leaves the file to the daemon). The model and effort are the
-// last turn's (`turn_context`).
+// A Codex TUI's session: the rollout file it has open (`codex --no-daemon`;
+// seen live with codex-cli 0.167: the TUI process itself holds
+// <sessions>/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl open, its real path even
+// when <home>/sessions is a link to a shared tree), else the newest rollout in
+// its folder written since it started, under the home it uses (its CODEX_HOME,
+// else ~/.codex; a TUI on the shared daemon leaves the file to the daemon).
+// The model and effort are the last turn's (`turn_context`). The chat's agent
+// inherits the home of the process that has it open (`home`), else the scanned home's.
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { openFiles, processStart, processTree, type TuiQuery, type TuiSession } from "../tui.ts";
+import { openFiles, processStart, processTree, treeHomes, type TuiQuery, type TuiSession } from "../tui.ts";
 
-const home = () => process.env.CODEX_HOME || join(homedir(), ".codex");
 const real = (p: string) => {
   try {
     return realpathSync(p);
@@ -16,9 +18,9 @@ const real = (p: string) => {
   }
 };
 
-/** Rollout files under sessions/YYYY/MM/DD, newest days first, as far back as `since`. */
-function rollouts(since: number): string[] {
-  const root = join(home(), "sessions");
+/** Rollout files under <home>/sessions/YYYY/MM/DD, newest days first, as far back as `since`. */
+function rollouts(home: string, since: number): string[] {
+  const root = join(home, "sessions");
   const out: string[] = [];
   const dirs = (p: string) => {
     try {
@@ -52,23 +54,33 @@ function meta(file: string): { cwd: string | null; model: string | null; effort:
 }
 
 export function codexTuiSession(q: TuiQuery): TuiSession {
-  let file = openFiles(processTree(q.pid)).find((f) => /\/rollout-[^/]*\.jsonl$/.test(f)) ?? null;
-  if (!file) {
+  const tree = processTree(q.pid);
+  const homes = treeHomes(tree, "codex");
+  const open = openFiles(tree).find((o) => /\/rollout-[^/]*\.jsonl$/.test(o.file));
+  // The holder's home; one whose environment can't be read, the TUI's (the root's).
+  let found = open ? { file: open.file, home: (homes.find((h) => h.pid === open.pid) ?? homes[0]!).home } : null;
+  if (!found) {
     const since = (processStart(q.pid) ?? Date.now() - 86_400_000) - 5000;
     const cwd = real(q.cwd);
-    let best: { f: string; t: number } | null = null;
-    for (const f of rollouts(since)) {
-      const t = statSync(f).mtimeMs;
-      if (t < since || (best && t <= best.t)) continue;
-      const m = meta(f);
-      if (m.cwd && real(m.cwd) === cwd) best = { f, t };
+    let best: { file: string; home: string | null; t: number } | null = null;
+    const seen = new Set<string>();
+    for (const h of homes) {
+      if (seen.has(h.dir)) continue;
+      seen.add(h.dir);
+      for (const f of rollouts(h.dir, since)) {
+        const t = statSync(f).mtimeMs;
+        if (t < since || (best && t <= best.t)) continue;
+        const m = meta(f);
+        if (m.cwd && real(m.cwd) === cwd) best = { file: f, home: h.home, t };
+      }
     }
-    file = best?.f ?? null;
+    found = best;
   }
-  if (!file) throw new Error("no Codex session in this folder since it started: send it a message first");
+  if (!found) throw new Error("no Codex session in this folder since it started: send it a message first");
+  const file = found.file;
   const m = meta(file);
   return {
-    session: file, model: m.model ? `openai/${m.model}` : null, thinking: m.effort,
+    session: file, home: found.home, model: m.model ? `openai/${m.model}` : null, thinking: m.effort,
     args: [...(m.model ? ["-c", `model=${JSON.stringify(m.model)}`] : []), ...(m.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(m.effort)}`] : [])],
   };
 }

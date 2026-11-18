@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { CodexProcess, CodexRpcError } from "./rpc.ts";
 import type { RequestId } from "./rpc.ts";
 import { CodexMapper, userContent } from "./map.ts";
@@ -19,7 +19,7 @@ import { stripAnsi } from "../../ansi.ts";
 import { AgentError } from "../types.ts";
 import { CODEX_TOOLS } from "./tools.ts";
 import { mcpFailureNotice } from "../mcp.ts";
-import { agentEnv } from "../env.ts";
+import { agentEnv, homeOf } from "../env.ts";
 import type { McpFailure } from "../mcp.ts";
 import type {
   ProviderAdapter, AdapterHost, AdapterOptions, Capabilities, StartInfo, NormalizedEvent, AskAnswer, ImageBlock, Ask,
@@ -126,7 +126,7 @@ export function readImageFile(path: string): ImageBlock | null {
 }
 
 function codexHome(): string {
-  return process.env.CODEX_HOME || join(homedir(), ".codex");
+  return homeOf(process.env.CODEX_HOME, "codex");
 }
 
 /** `~/.codex/prompts/*.md`: custom prompts, expanded by the client. */
