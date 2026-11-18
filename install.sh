@@ -1,32 +1,38 @@
 #!/bin/sh
-# herdr-chat's installer, for the Herdr desktop app:
+# herdr-chat's installer, for the Herdr desktop app, or (--host-only) for the
+# host alone on a machine without the app:
 #
 #   curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-chat/main/install.sh | sh -s -- --app
 #   ./install.sh                  in a clone: installs the clone, as it always has
 #
 #   install.sh [--app|--host-only] [--uninstall] [--version X.Y.Z] [--from FILE|DIR] [options]
 #
-# --host-only: on a machine without the Herdr app (a remote space's machine),
-# only the host and the hc chat templates, through install/host.sh: nothing
-# in an app home, no layout, keys or sub-agents notes. It prints the host's path.
+# Two targets, each with its installer (TARGET below):
+#   --app (the default): the Herdr app, through install/app.sh
+#   --host-only: on a machine without the Herdr app (a remote space's machine),
+#     only the host, through install/host.sh: nothing in an app home, no layout,
+#     keys, templates or sub-agents notes. It prints the host command.
 #
-# The options (--no-layout, --no-subagents, --take-agents-slot, --take-menu)
-# go to the installer, install/app.sh, which says what each does
-# (install/app.sh --help; install/host.sh --help for --host-only); a `--` before them is fine too.
+# Other options go to TARGET's installer: the app's (--no-layout, --no-subagents,
+# --take-agents-slot, --take-menu) to install/app.sh, which says what each does
+# (install/app.sh --help); --host-only takes none (install/host.sh --help).
+# A `--` before them is fine too.
 #
-# In a clone (this file beside install/app.sh, no --version or --from): runs
-# install/app.sh on the clone; the chat's host is the clone's bin/herdr-chat-host.
+# In a clone (this file beside install/TARGET.sh, no --version or --from): runs
+# install/TARGET.sh on the clone; the host command is the clone's bin/herdr-chat-host.
 #
 # Otherwise a release, with no clone, no TypeScript and no npm install: it
 # downloads herdr-chat-<version>.tar.gz and SHA256SUMS from the latest release
 # (--version picks one), checks the archive's SHA-256, unpacks it to
 # ~/.local/share/herdr-chat/<version> ($XDG_DATA_HOME if set), points
-# `current` there, and runs that version's install/app.sh: the chat's host is
-# current/bin/herdr-chat-host. Run it again to update. --from takes a local
-# archive (its SHA256SUMS beside it) or a folder of them instead of a download.
+# `current` there, records the target in `target`, and runs that version's
+# install/TARGET.sh: the host command is current/bin/herdr-chat-host. Run it
+# again to update. --from takes a local archive (its SHA256SUMS beside it) or a
+# folder of them instead of a download. One release folder serves one target:
+# a release installed for the other target is refused, with nothing changed.
 #
-# --uninstall: from a clone, the clone's uninstall; otherwise the installed
-# release's uninstall, then ~/.local/share/herdr-chat is removed.
+# --uninstall: from a clone, the clone's uninstall for TARGET; otherwise the
+# installed release's (its own target only), then ~/.local/share/herdr-chat is removed.
 set -eu
 
 repo=ChmaraX/herdr-chat
@@ -42,7 +48,7 @@ while [ "$n" -gt 0 ]; do
   a=$1; shift; n=$((n - 1))
   if [ -n "$rest" ]; then set -- "$@" "$a"; continue; fi
   case $a in
-    --app) ;; # the only target: the Herdr app (gitview's and nvim's flag, for the same one-liner)
+    --app) target=app ;; # the default target (gitview's and nvim's flag, for the same one-liner)
     --host-only) target=host ;;
     --uninstall) uninstall=1 ;;
     --version|--from)
@@ -61,15 +67,25 @@ done
 here=$(dirname "$0")
 case $0 in *install.sh) local_tree=1 ;; *) local_tree= ;; esac
 if [ -n "$local_tree" ] && [ -f "$here/install/$target.sh" ] && [ -z "$version$from" ]; then
-  [ ! -e "$base/current" ] || [ -n "$uninstall" ] ||
+  # A host-only install leaves a release's app install as it is.
+  [ ! -e "$base/current" ] || [ -n "$uninstall" ] || [ "$target" = host ] ||
     say "a release install is in $base; this tree's install takes its place ($one_liner --uninstall removes that copy)"
   exec bash "$here/install/$target.sh" ${uninstall:+--uninstall} "$@"
+fi
+
+# --- a release of the other target: refused, nothing changed ------------------------------
+# A release from before --host-only has no `target` file: it's an app install.
+flag() { if [ "$1" = host ]; then echo --host-only; else echo --app; fi; }
+if [ -e "$base/current" ]; then
+  installed=$(cat "$base/target" 2>/dev/null || echo app)
+  [ "$installed" = "$target" ] ||
+    die "the release in $base is installed $(flag "$installed"), not $(flag "$target"); nothing changed. Run with $(flag "$installed") for it, or remove it first: $one_liner $(flag "$installed") --uninstall"
 fi
 
 # --- uninstall a release ----------------------------------------------------------------
 if [ -n "$uninstall" ]; then
   [ -f "$base/current/install/$target.sh" ] ||
-    die "no release install in $base (installed from a clone? run ./install.sh --uninstall there)"
+    die "no release install in $base (installed from a clone? run ./install.sh $(flag "$target") --uninstall there)"
   HERDR_CHAT_ROOT="$base/current" HERDR_CHAT_LINK="$base/current" HERDR_CHAT_INSTALL_CMD="$one_liner" \
     bash "$base/current/install/$target.sh" --uninstall "$@"
   rm -rf "$base"
@@ -78,9 +94,9 @@ if [ -n "$uninstall" ]; then
 fi
 
 # --- requirements, before any download ---------------------------------------------------
-# install/app.sh checks the versions (Herdr's, node's) from the release's package.json.
+# install/TARGET.sh checks node's version (app.sh Herdr's too) from the release's package.json.
 command -v node >/dev/null 2>&1 || die "node not found: a release needs Node 20 or newer (https://nodejs.org)"
-command -v hc >/dev/null 2>&1 || die "hc (herdr-core) not on PATH: it comes with the Herdr app (https://herdr.dev)"
+command -v hc >/dev/null 2>&1 || die "hc (herdr-core) not on PATH: it comes with the Herdr app, or install herdr-core on its own (https://herdr.dev)"
 if [ "$target" = app ]; then
   app=${HERDR_APP_BIN:-$(command -v herdr-app 2>/dev/null || true)}
   if [ -z "$app" ]; then
@@ -157,6 +173,7 @@ if ! HERDR_CHAT_ROOT="$dest" HERDR_CHAT_LINK="$base/current" HERDR_CHAT_INSTALL_
   die "herdr-chat $version not installed (see above)"
 fi
 
+echo "$target" >"$base/target"
 # Keep this version and the one before it; a running host has its code loaded already.
 for d in "$base"/*/; do
   v=$(basename "$d")

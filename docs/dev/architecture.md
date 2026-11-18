@@ -116,7 +116,7 @@ Then:
   arguments). The parent sees one exit note for the old terminal; after
   that `hc send`, `hc wait` and `hc read` by name reach the chat.
 
-## The install (`install.sh`, `install/app.sh`, `install/`)
+## The install (`install.sh`, `install/app.sh`, `install/host.sh`, `install/`)
 
 Each change is recorded under `data/herdr-chat/` in the app home, so
 `--uninstall` undoes exactly that:
@@ -140,3 +140,9 @@ Each change is recorded under `data/herdr-chat/` in the app home, so
 The `hc` templates go to `~/.config/herdr-core/templates/`, never over a
 file the install didn't write. An older install left `mods/pi`, the chat
 under its old name; the install removes it once no tab or layout shows it.
+
+`install.sh --host-only` runs `install/host.sh` instead, for a machine
+without the app: it readies the host and prints the host command, and
+writes none of the above (no app home, templates or notes). A release
+records its target in `~/.local/share/herdr-chat/target`; `install.sh`
+refuses the other target over it.
