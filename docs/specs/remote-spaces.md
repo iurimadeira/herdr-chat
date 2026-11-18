@@ -81,11 +81,13 @@ Agent homes and sessions
 - The agent a remote chat starts is the configured command for that machine
   (`acc -p --output-format stream-json …`, `aco … app-server`), in the space's
   folder, so the router picks the account by that folder.
-- Finding a running agent's session ("Continue as chat", "Open as chat")
-  uses the agent process's own `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from its
-  environment, then `<home>/sessions/<pid>.json` for Claude's session id,
-  falling back to `~/.claude` / `~/.codex` when unset. This applies to local
-  chats too (it fixes multi-home setups locally).
+- "Continue as chat" finds a running agent's session through the agent
+  process's own `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from its environment, then
+  `<home>/sessions/<pid>.json` for Claude's session id, falling back to
+  `~/.claude` / `~/.codex` when unset. The chat that takes the session over
+  inherits that home (the session's home; herdr-chat still never picks one).
+  This applies to local chats too (it fixes multi-home setups locally).
+  "Open as chat" connects to an existing chat's host and looks up no session.
 - `/resume` on a remote chat lists sessions from every agent home on that
   machine that the configured agents use, for This folder / All folders.
 
@@ -168,8 +170,9 @@ Sub-agents
   `127.0.0.1` and the token header is accepted alongside `hello`.
 - Machine unreachable or host missing on it: the chat shows the error and a
   retry, never an endless "Starting…".
-- Mac and remote host versions differ: the existing host-version check
-  (protocol v3.5 restart prompt) covers remote hosts too.
+- Mac and remote host versions differ: a remote chat shows the version
+  mismatch without offering a restart (restarting would rerun the remote
+  machine's own install). Updating a remote host is a separate ticket.
 - Exposure: a remote host listens only on the machine's tailnet address
   (lab: its `100.x` address on `tailscale0`), never on `0.0.0.0`, a LAN
   address or any other interface; it refuses to start when given one. The
