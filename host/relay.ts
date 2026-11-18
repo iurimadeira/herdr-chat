@@ -179,6 +179,7 @@ export class Relay {
           o.host, "bridge", h.chat, "--state-dir", o.remoteStateDir,
           "--ping-ms", String(o.times.pingMs), "--dead-ms", String(o.times.deadMs),
         ];
+        o.log(`${tag}: starting a bridge`);
         const run = await c.call("terminal.run", {
           on: o.machine, argv, no_parent: true, no_notify: true, rm: true,
           labels: { "herdr-chat.chat": h.chat, "herdr-chat.role": "bridge" },

@@ -71,7 +71,8 @@ async function startRelay(): Promise<{ proc: ChildProcess; port: number; log: ()
       const e = JSON.parse(readFileSync(regPath, "utf8"));
       if (e.pid === proc.pid && e.wsPort) {
         const logPath = join(macState(), "relays", `${r.machine}.log`);
-        return { proc, port: e.wsPort, log: () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "") };
+        const mine = `[${proc.pid}]`;
+        return { proc, port: e.wsPort, log: () => (existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n").filter((l) => l.includes(mine)).join("\n") : "") };
       }
     } catch {}
     if (proc.exitCode !== null || Date.now() - t0 > 10_000) throw new Error(`relay did not start: ${out}`);
@@ -127,5 +128,80 @@ test("relay: a chat's records round-trip byte for byte, unicode, control charact
     throw new Error(`${(e as Error).message}\nrelay log:\n${log()}`);
   } finally {
     ws.ws.close();
+  }
+});
+
+function closedCode(ws: WsClient): Promise<number> {
+  return new Promise((resolve) => {
+    if (ws.closed) return resolve(-1);
+    ws.ws.once("close", (code) => resolve(code));
+  });
+}
+
+test("relay: a wrong token or a hello without a chat is closed, and nothing starts on the machine", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  try {
+    const wrong = await joinRelay(r.port, h, "0".repeat(64));
+    assert.equal(await closedCode(wrong), 4003);
+    assert.deepEqual(wrong.records, [], "a wrong token gets nothing");
+    const noChat = new WsClient(r.port);
+    await noChat.opened();
+    noChat.send({ t: "hello", v: 1, token: h.registry!.token, client: "mod" });
+    assert.equal(await closedCode(noChat), 4003);
+    const log = r.log();
+    assert.match(log, /c-r\d+: a wrong token/);
+    assert.match(log, /a bad hello/);
+    assert.doesNotMatch(log, /starting a bridge/, "no bridge for a refused client");
+    assert.equal(bridges().length, 0);
+  } finally {
+    r.proc.kill("SIGKILL");
+  }
+});
+
+test("relay: a burst over 4 MiB while the mod holds its acks arrives intact (the window holds it back)", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  const ws = await joinRelay(r.port, h);
+  try {
+    await welcomed(ws);
+    const tcp = h.client;
+    const wsFrom = ws.records.length;
+    const tcpFrom = tcp.records.length;
+    const held = ws.messages;
+    ws.holding = true;
+    const prompt = (i: number): string => `burst ${i} ` + "é🙂b".repeat(1 << 18);
+    for (let i = 0; i < 18; i++) {
+      const res = await tcp.req("send", { text: prompt(i) });
+      assert.equal(res.disposition, "started");
+      await tcp.waitFor((c) => idle(c) && c.items.filter((x) => x.kind === "assistant").length === i + 1, 20_000, `turn ${i}`);
+    }
+    // The sender alone gets its replies.
+    const tcpBurst = withoutPings(tcp.records.slice(tcpFrom)).filter((x) => x.t !== "res");
+    const burstBytes = tcpBurst.reduce((n, x) => n + Buffer.byteLength(JSON.stringify(x)), 0);
+    assert.ok(burstBytes > 4 << 20, `the burst is ${burstBytes} bytes`);
+    assert.ok(ws.messages - held <= 4, `the held client got at most its window (${ws.messages - held} messages)`);
+    ws.resume();
+    const wsBurstOf = (): Rec[] => withoutPings(ws.records.slice(wsFrom));
+    await ws.until(() => wsBurstOf().length >= tcpBurst.length, 30_000, "the held burst arrives").catch((e) => {
+      throw new Error(`${e.message}: ${wsBurstOf().length} of ${tcpBurst.length} records, ${ws.messages} messages, closed=${ws.closed}`);
+    });
+    assert.deepEqual(wsBurstOf().map(withoutSeq), tcpBurst.map(withoutSeq));
+    assert.ok(!ws.closed, "no resync");
+    assert.doesNotMatch(r.log(), /link:|bridge ended/);
+
+    // A reconnect's snapshot is one record of several MiB: the other way, over the window too.
+    ws.ws.close();
+    const again = await joinRelay(r.port, h);
+    await welcomed(again, 30_000);
+    const snap = again.records.find((x) => x.t === "snapshot")!;
+    assert.ok(Buffer.byteLength(JSON.stringify(snap)) > 4 << 20, "a snapshot over 4 MiB");
+    assert.deepEqual(snap.items, tcp.items);
+    again.ws.close();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    ws.ws.close();
+    r.proc.kill("SIGKILL");
   }
 });

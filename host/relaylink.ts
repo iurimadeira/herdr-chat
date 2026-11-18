@@ -122,7 +122,7 @@ export class Link {
       const end = Math.min(b.length, o + LINK_CHUNK);
       const d = b.subarray(o, end).toString("base64");
       this.queue.push(end < b.length ? `"d":"${d}","c":1}` : `"d":"${d}"}`);
-      this.queuedBytes += d.length;
+      this.queuedBytes += this.queue[this.queue.length - 1]!.length;
       if (end >= b.length) break;
     }
     this.pump();

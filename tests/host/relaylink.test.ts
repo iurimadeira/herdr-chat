@@ -60,6 +60,7 @@ test("link: at most a window unacknowledged, and acks wait for a consumer that d
   assert.deepEqual(why, []);
   assert.deepEqual(bGot, recs);
   assert.ok(maxInFlight <= LINK_WINDOW + 300 * 1024, `in flight ${maxInFlight}`);
+  assert.equal(a.queued(), 0, "nothing counted as queued once all is sent");
 });
 
 test("link: a control byte, a lost line or garbage breaks it", () => {
