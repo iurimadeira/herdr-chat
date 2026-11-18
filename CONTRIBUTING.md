@@ -77,15 +77,19 @@ the release and attaches it:
 - `herdr-chat-<version>.tar.gz`, from `npm run build` (`scripts/build.mjs`):
   the host and `install/*.ts` built with esbuild into plain JS for Node 20+
   (`highlight.js` and `beautiful-mermaid` bundled in), with `bin/`, `herdr-app/mods/`,
-  `extension/`, `install/app.sh` and `install.sh`. It's the same archive for
-  every platform.
+  `extension/`, `install/app.sh`, `install/host.sh` and `install.sh`. It's
+  the same archive for every platform.
 - `SHA256SUMS`, which `install.sh` checks the archive against.
 
-`install.sh` is the one-liner's script. Run as `./install.sh` in a checkout,
-it installs the checkout (`install/app.sh`). Run any other way, it downloads
-a release (`--version X.Y.Z`; `--from <archive or folder>` for a local one),
-unpacks it to `~/.local/share/herdr-chat/<version>`, points `current` at it,
-and runs that version's `install/app.sh`.
+`install.sh` is the one-liner's script. Its target picks the installer:
+`install/app.sh` for the Herdr app (the default, `--app`), `install/host.sh`
+for `--host-only` (the host alone, on a machine without the app). Run as
+`./install.sh` in a checkout, it installs the checkout with that installer.
+Run any other way, it downloads a release (`--version X.Y.Z`;
+`--from <archive or folder>` for a local one), unpacks it to
+`~/.local/share/herdr-chat/<version>`, points `current` at it, records the
+target in `target`, and runs that version's installer. A release installed
+for the other target is refused.
 
 ```sh
 npm run build               # dist/herdr-chat-<version>.tar.gz and dist/SHA256SUMS

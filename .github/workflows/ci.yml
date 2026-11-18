@@ -27,7 +27,7 @@ jobs:
       - name: node --check the mods
         run: for f in herdr-app/mods/*/*.js; do node --check "$f"; done
       - name: shell syntax
-        run: sh -n install.sh && bash -n install/app.sh && bash -n tests/release/install-e2e.sh
+        run: sh -n install.sh && bash -n install/app.sh && bash -n install/host.sh && bash -n tests/release/install-e2e.sh
       - run: npm run build
       - name: the archive matches SHA256SUMS
         run: cd dist && shasum -a 256 -c SHA256SUMS
