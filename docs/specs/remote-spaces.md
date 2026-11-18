@@ -50,7 +50,8 @@ Machine configuration
   `host` is the host command on that machine; `agents` maps a provider to
   the command to start on that machine (lab: `acc`, `aco`).
 - A missing `host` or agent command is looked up on that machine through its
-  login shell (`command -v`). A machine with no `address` and nothing found
+  login shell (`command -v`). A host installed with `--host-only` is not on
+  PATH, so that machine's entry sets `host` to the path the installer prints. A machine with no `address` and nothing found
   shows a clear error in the chat ("lab: herdr-chat host not configured"),
   never a hang at "Starting…".
 
@@ -102,9 +103,9 @@ Files and editor
   new terminal tab of that remote space.
 
 Install
-- `install.sh --host-only` installs the host (release or checkout link) and
-  the hc chat templates on a machine without the Herdr app; it touches no app
-  home, layout or keys.
+- `install.sh --host-only` installs the host (release or checkout link) on a
+  machine without the Herdr app and prints the host command's path; it writes
+  no hc chat templates and touches no app home, layout or keys.
 - The Mac install respects preset keys (`open: cmd-shift-i`,
   `focusComposer: null`) and `--no-subagents`, so its only edits to
   chezmoi-managed files are `layouts/iuri.json` and `keys.json`, which are
