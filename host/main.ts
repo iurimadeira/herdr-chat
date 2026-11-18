@@ -17,15 +17,17 @@ import type { Args } from "./args.ts";
 import { appHomeOf, labelSelf, newChatId, planSubagent } from "./subagent.ts";
 import { readChatConfig } from "./settings.ts";
 import { PaneWatch } from "./panewatch.ts";
+import { AGENT_HOMES, type HomeAgent } from "./providers/env.ts";
 import { hostBuild } from "./build.ts";
 
-const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
+const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--agent-home=<dir>] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
+  (--agent-home: the continued TUI's agent home, CLAUDE_CONFIG_DIR / CODEX_HOME for the agent; empty: unset)
   (--app-home: the Herdr app's home, whose app it asks to close its hidden pane once its chat's pane is gone; default $HERDR_APP_HOME, else ~/.config/herdr-app)
   (--provider defaults to the chat's registered provider, else pi; --pi <cmd> or HERDR_CHAT_PI picks the pi binary)
-herdr-chat-host run     [--provider pi|claude|codex] [--session <file>] [--cwd <dir>] [-- <agent args>]
+herdr-chat-host run     [--provider pi|claude|codex] [--session <file> [--agent-home=<dir>]] [--cwd <dir>] [-- <agent args>]
   (a sub-agent chat, for \`hc run\`: a fresh chat id, the app's state dir and the chat mod's config.json, labels its own terminal)
 herdr-chat-host tui-session --provider <id> --pid <pid> --cwd <dir> [--label <session>]
-  (Continue as chat: the session a running agent TUI has open, as JSON {session, model, thinking, args}; exit 1 with why not)
+  (Continue as chat: the session a running agent TUI has open, as JSON {session, home, model, thinking, args}; exit 1 with why not)
 herdr-chat-host inspect --chat <id> --state-dir <dir> [--wait 'phase=idle,items>=3'] [--timeout <s>]
   (inspect/send/op wait up to --timeout seconds, default 10 s for connecting and 30 s for --wait, for a starting host)
 herdr-chat-host send    --chat <id> --state-dir <dir> [--mode auto|steer|followUp] [--image <path>]... <text>
@@ -72,6 +74,16 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
       appendFileSync(logFile, `${new Date().toISOString()} ${msg}\n`);
     } catch {}
   };
+  // --agent-home: the agent home of the TUI this chat continues (tui-session's
+  // `home`; empty: none set, the agent's default), for the agent to inherit. The
+  // host's environment is the agent's, so the variable is set or removed here; a
+  // launcher (e.g. acc) still has the last word. Kept across restarts (tab props).
+  const home = a.flags.get("agent-home")?.[0];
+  if (home !== undefined && provider in AGENT_HOMES) {
+    const { variable } = AGENT_HOMES[provider as HomeAgent];
+    if (home) process.env[variable] = home;
+    else delete process.env[variable];
+  }
   const adapter = createAdapter(provider, { cwd, args: a.after, log, ...(agentCommand ? { command: agentCommand } : {}) });
   log(`serve chat=${chatId} cwd=${cwd} session=${session ?? "-"} provider=${provider} cmd=${agentCommand ?? "(default)"} pid=${process.pid}`);
 

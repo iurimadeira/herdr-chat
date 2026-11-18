@@ -105,9 +105,19 @@ asks the host which session it has open, `herdr-chat-host tui-session
 `<home>` is the agent home the TUI's process uses: its `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME` (`/proc/<pid>/environ` on Linux, `ps -E` on macOS), else
 `~/.claude` / `~/.codex`; each process of the TUI's tree its own (a launcher
-and the agent it runs may differ). When its environment can't be read, the
-host's own. So a TUI started under another home (an account router's
-`~/.claude-alt`) continues on its own session, not on the host's home's.
+and the agent it runs may differ). A process whose environment can't be read
+(gone, or another user's) gives no home, except the TUI's own process, which
+then has the default; never the host's own. So a TUI started under another
+home (an account router's `~/.claude-alt`) continues on its own session, not
+on the host's home's.
+
+The chat's agent inherits that home: `tui-session` returns it (`home`, null
+when the TUI had none set), the mod gives it to the host (`serve
+--agent-home=<home>`, empty for none; a pane prop, so restarts keep it), and
+the host sets or removes `CLAUDE_CONFIG_DIR` / `CODEX_HOME` for its agent. A
+configured agent command (a launcher such as `acc`) may still set its own.
+Claude Code's conflict guard reads the registry of the host's home and of the
+home the session file is in.
 
 Then:
 

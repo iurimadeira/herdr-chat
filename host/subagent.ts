@@ -54,6 +54,8 @@ export function planSubagent(o: { args: Args; env: NodeJS.ProcessEnv; cwd: strin
   const flags = new Map<string, string[]>([["chat", [o.chat]], ["cwd", [cwd]], ["state-dir", [stateDir]], ["provider", [provider]]]);
   const session = a.flags.get("session")?.[0];
   if (session) flags.set("session", [resolve(o.cwd, session)]);
+  const home = a.flags.get("agent-home")?.[0];
+  if (home !== undefined) flags.set("agent-home", [home]);
   // The agent's command: the caller's --<provider>, else the config's (host/settings.ts).
   const settings = config.agent(provider);
   const agent = a.flags.get(provider)?.[0] ?? settings.command;

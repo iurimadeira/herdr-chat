@@ -20,6 +20,8 @@ export type ClaudeHostOptions = {
   /** Arguments after `--` (passed to claude). */
   args?: string[];
   env?: Record<string, string>;
+  /** More serve flags (e.g. --agent-home). */
+  hostArgs?: string[];
 };
 
 export class ClaudeHost extends Host {
@@ -38,7 +40,7 @@ export class ClaudeHost extends Host {
 }
 
 export async function startClaude(o: ClaudeHostOptions): Promise<ClaudeHost> {
-  const h = new ClaudeHost({ name: o.name, provider: "claude", agent: FAKE_CLAUDE, ...(o.dir ? { dir: o.dir } : {}), ...(o.cwd ? { cwd: o.cwd } : {}), ...(o.chat ? { chat: o.chat } : {}), ...(o.session ? { session: o.session } : {}), piArgs: o.args ?? [] });
+  const h = new ClaudeHost({ name: o.name, provider: "claude", agent: FAKE_CLAUDE, ...(o.dir ? { dir: o.dir } : {}), ...(o.cwd ? { cwd: o.cwd } : {}), ...(o.chat ? { chat: o.chat } : {}), ...(o.session ? { session: o.session } : {}), ...(o.hostArgs ? { hostArgs: o.hostArgs } : {}), piArgs: o.args ?? [] });
   const env: Record<string, string> = {
     CLAUDE_CONFIG_DIR: h.configDir,
     FAKE_CLAUDE_LOG: join(h.dir, "claude-in.jsonl"),

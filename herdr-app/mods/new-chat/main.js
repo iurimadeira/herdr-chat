@@ -109,7 +109,7 @@ const alive = async (pid) => (await exec("kill", ["-0", String(pid)])).code === 
  * - A sub-agent (a parent): a core terminal runs one program, so the TUI ends
  *   (`hc kill`), and a host starts in its place with the same parent, name and
  *   folder (`hc run --parent <p> --name <n>`, bin/herdr-chat-subagent --session
- *   <file>): the parent sees one exit note, then its `hc send/wait <name>`
+ *   <file> --agent-home=<the TUI's>): the parent sees one exit note, then its `hc send/wait <name>`
  *   reach the host. Then the chat dialog.
  * - A top-level TUI (continueInPlace): the chat takes its pane's place.
  * `addr` empty: the focused terminal (the "continue" key).
@@ -136,7 +136,8 @@ export async function continueAsChat(addr, cx) {
   // The model and thinking as the agent's own arguments: a sub-agent's host isn't restarted by a chat later.
   const args = found.args ?? [];
   const r = await hc(["run", "--bg", "--json", "--parent", t.parent, ...(t.name ? ["--name", t.name] : []), "--cwd", cwd,
-    "--", launcher, "--provider", agent, "--session", found.session, ...(args.length ? ["--", ...args] : [])]);
+    "--", launcher, "--provider", agent, "--session", found.session,
+    ...("home" in found ? [`--agent-home=${found.home ?? ""}`] : []), ...(args.length ? ["--", ...args] : [])]);
   if (r.code !== 0) throw new Error(`hc run: ${r.stderr.trim() || r.stdout.trim()}`);
   const next = JSON.parse(r.stdout).address;
   // The launcher labels its terminal with the chat id once it starts.
@@ -162,7 +163,7 @@ export async function continueInPlace(t, agent, pid, cwd, found, cx) {
   const before = new Set(panes().map((p) => p.pane));
   const chat = `c-${randomBytes(4).toString("hex")}`;
   run("pane.split", { direction: "right", pane: pane.pane, mod: "chat",
-    props: { chat, provider: agent, session: found.session, afterPid: pid, cwd, ...(found.model ? { model: found.model } : {}), ...(found.thinking ? { thinking: found.thinking } : {}) } });
+    props: { chat, provider: agent, session: found.session, afterPid: pid, cwd, ...("home" in found ? { agentHome: found.home } : {}), ...(found.model ? { model: found.model } : {}), ...(found.thinking ? { thinking: found.thinking } : {}) } });
   let mine = null;
   for (let i = 0; i < 50 && !mine; i++) { mine = panes().find((p) => !before.has(p.pane) && p.mod === "chat" && p.tab === pane.tab); if (!mine) await cx.sleep(100); }
   if (!mine) throw new Error("the chat's pane didn't appear beside the TUI");

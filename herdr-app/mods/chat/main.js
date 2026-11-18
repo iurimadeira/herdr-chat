@@ -144,6 +144,8 @@ export default class HerdrChat extends View {
       session: p.session ?? null,
       provider: this.provider,
       hostEnv: p.hostEnv ?? null,
+      // Continue as chat (new-chat's continueInPlace): the TUI's agent home.
+      ...(p.agentHome !== undefined ? { agentHome: p.agentHome } : {}),
       // Continue as chat on a top-level Pi TUI (new-chat's continueInPlace): its pid, model and thinking.
       handOver: p.afterPid ? { pid: p.afterPid, model: p.model ?? null, thinking: p.thinking ?? null } : null,
       attachOnly: Boolean(this.sub),

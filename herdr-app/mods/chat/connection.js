@@ -73,7 +73,7 @@ export function startError(text, cwd) {
 const BACKOFF = [250, 500, 1000, 2000, 2000];
 
 export class Connection {
-  // opts: {chat, cwd, attachOnly (never start a host), place: () => ({space, tab}) | null (a host starts only once the chat's tab is known), session, hostEnv, handOver ({pid, model, thinking} | null), onRecord(rec, cx), onChange(cx), log}
+  // opts: {chat, cwd, attachOnly (never start a host), place: () => ({space, tab}) | null (a host starts only once the chat's tab is known), session, hostEnv, agentHome (the continued TUI's agent home, null: none set; undefined: not a continued TUI), handOver ({pid, model, thinking} | null), onRecord(rec, cx), onChange(cx), log}
   constructor(opts) {
     this.o = opts;
     this.status = "connecting"; // connecting | starting | connected | reconnecting | stopped | failed
@@ -241,6 +241,8 @@ export class Connection {
       "--", "/usr/bin/env", ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
       host, "serve", "--chat", this.o.chat, "--cwd", this.o.cwd, "--state-dir", stateDir(), "--app-home", appHome(), "--provider", provider,
       ...(session ? ["--session", session] : []),
+      // A TUI this chat continues: its agent home, for the agent (every start: the chat stays in it).
+      ...(this.o.agentHome !== undefined ? [`--agent-home=${this.o.agentHome ?? ""}`] : []),
       // A Pi TUI this chat takes over: the host waits for its pid, then uses its model and
       // thinking (only while that pid lives: a later restart of the chat ignores them).
       ...(session && this.o.handOver?.pid ? ["--after-pid", String(this.o.handOver.pid),
