@@ -4,11 +4,15 @@
 #   curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-chat/main/install.sh | sh -s -- --app
 #   ./install.sh                  in a clone: installs the clone, as it always has
 #
-#   install.sh [--app] [--uninstall] [--version X.Y.Z] [--from FILE|DIR] [options]
+#   install.sh [--app|--host-only] [--uninstall] [--version X.Y.Z] [--from FILE|DIR] [options]
+#
+# --host-only: on a machine without the Herdr app (a remote space's machine),
+# only the host and the hc chat templates, through install/host.sh: nothing
+# in an app home, no layout, keys or sub-agents notes. It prints the host's path.
 #
 # The options (--no-layout, --no-subagents, --take-agents-slot, --take-menu)
 # go to the installer, install/app.sh, which says what each does
-# (install/app.sh --help); a `--` before them is fine too.
+# (install/app.sh --help; install/host.sh --help for --host-only); a `--` before them is fine too.
 #
 # In a clone (this file beside install/app.sh, no --version or --from): runs
 # install/app.sh on the clone; the chat's host is the clone's bin/herdr-chat-host.
@@ -28,7 +32,7 @@ set -eu
 repo=ChmaraX/herdr-chat
 one_liner="curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh -s --"
 base="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-chat"
-uninstall= version= from= rest=
+uninstall= version= from= rest= target=app
 die() { echo "herdr-chat: $*" >&2; exit 1; }
 say() { echo "herdr-chat: $*"; }
 
@@ -39,6 +43,7 @@ while [ "$n" -gt 0 ]; do
   if [ -n "$rest" ]; then set -- "$@" "$a"; continue; fi
   case $a in
     --app) ;; # the only target: the Herdr app (gitview's and nvim's flag, for the same one-liner)
+    --host-only) target=host ;;
     --uninstall) uninstall=1 ;;
     --version|--from)
       [ "$n" -ge 1 ] || die "$a needs a value"
@@ -46,7 +51,7 @@ while [ "$n" -gt 0 ]; do
       shift; n=$((n - 1)) ;;
     --) rest=1 ;;
     -h|--help)
-      if [ -f "$0" ]; then sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; else echo "see https://github.com/$repo#install"; fi
+      if [ -f "$0" ]; then sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; else echo "see https://github.com/$repo#install"; fi
       exit 0 ;;
     *) set -- "$@" "$a" ;;
   esac
@@ -55,18 +60,18 @@ done
 # --- a clone (or an unpacked release run in place) ------------------------------------
 here=$(dirname "$0")
 case $0 in *install.sh) local_tree=1 ;; *) local_tree= ;; esac
-if [ -n "$local_tree" ] && [ -f "$here/install/app.sh" ] && [ -z "$version$from" ]; then
+if [ -n "$local_tree" ] && [ -f "$here/install/$target.sh" ] && [ -z "$version$from" ]; then
   [ ! -e "$base/current" ] || [ -n "$uninstall" ] ||
     say "a release install is in $base; this tree's install takes its place ($one_liner --uninstall removes that copy)"
-  exec bash "$here/install/app.sh" ${uninstall:+--uninstall} "$@"
+  exec bash "$here/install/$target.sh" ${uninstall:+--uninstall} "$@"
 fi
 
 # --- uninstall a release ----------------------------------------------------------------
 if [ -n "$uninstall" ]; then
-  [ -f "$base/current/install/app.sh" ] ||
+  [ -f "$base/current/install/$target.sh" ] ||
     die "no release install in $base (installed from a clone? run ./install.sh --uninstall there)"
   HERDR_CHAT_ROOT="$base/current" HERDR_CHAT_LINK="$base/current" HERDR_CHAT_INSTALL_CMD="$one_liner" \
-    bash "$base/current/install/app.sh" --uninstall "$@"
+    bash "$base/current/install/$target.sh" --uninstall "$@"
   rm -rf "$base"
   say "removed $base"
   exit 0
@@ -76,13 +81,15 @@ fi
 # install/app.sh checks the versions (Herdr's, node's) from the release's package.json.
 command -v node >/dev/null 2>&1 || die "node not found: a release needs Node 20 or newer (https://nodejs.org)"
 command -v hc >/dev/null 2>&1 || die "hc (herdr-core) not on PATH: it comes with the Herdr app (https://herdr.dev)"
-app=${HERDR_APP_BIN:-$(command -v herdr-app 2>/dev/null || true)}
-if [ -z "$app" ]; then
-  for c in /Applications/*.app/Contents/MacOS/Herdr "$HOME"/Applications/*.app/Contents/MacOS/Herdr; do
-    if [ -x "$c" ]; then app=$c; break; fi
-  done
+if [ "$target" = app ]; then
+  app=${HERDR_APP_BIN:-$(command -v herdr-app 2>/dev/null || true)}
+  if [ -z "$app" ]; then
+    for c in /Applications/*.app/Contents/MacOS/Herdr "$HOME"/Applications/*.app/Contents/MacOS/Herdr; do
+      if [ -x "$c" ]; then app=$c; break; fi
+    done
+  fi
+  [ -n "$app" ] || die "the Herdr app isn't installed (https://herdr.dev), or set HERDR_APP_BIN=/path/to/herdr-app"
 fi
-[ -n "$app" ] || die "the Herdr app isn't installed (https://herdr.dev), or set HERDR_APP_BIN=/path/to/herdr-app"
 command -v tar >/dev/null 2>&1 || die "tar not found"
 
 sha256() {
@@ -132,7 +139,7 @@ want=$(awk -v f="$name" '$2 == f || $2 == "*" f { print $1 }' "$work/SHA256SUMS"
 # --- unpack to $base/<version>, point current at it, run its installer ----------------------
 tar -xzf "$work/$name" -C "$work"
 tree=$work/herdr-chat-$version
-[ -f "$tree/install/app.sh" ] && [ -f "$tree/host/main.js" ] || die "$name has no herdr-chat-$version/ with install/app.sh and host/main.js"
+[ -f "$tree/install/$target.sh" ] && [ -f "$tree/host/main.js" ] || die "$name has no herdr-chat-$version/ with install/$target.sh and host/main.js"
 grep -q "\"version\": \"$version\"" "$tree/package.json" || die "$name's package.json isn't version $version"
 
 prev=$(readlink "$base/current" 2>/dev/null || true)
@@ -142,7 +149,7 @@ if [ -e "$dest" ]; then old=$work/.old; mv "$dest" "$old"; fi
 mv "$tree" "$dest"
 ln -sfn "$version" "$base/current"
 if ! HERDR_CHAT_ROOT="$dest" HERDR_CHAT_LINK="$base/current" HERDR_CHAT_INSTALL_CMD="$one_liner" \
-  bash "$dest/install/app.sh" "$@"; then
+  bash "$dest/install/$target.sh" "$@"; then
   # Nothing of this version stays: the link and the folder go back to what they were.
   rm -rf "$dest"
   if [ -n "$old" ]; then mv "$old" "$dest"; fi

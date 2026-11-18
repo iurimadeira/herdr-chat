@@ -350,6 +350,56 @@ test("install.sh: --no-subagents writes no templates and no notes; a plain insta
   assert.ok(!existsSync(join(tpl, "pi-chat.md")));
 });
 
+// --- install.sh --host-only: a machine without the Herdr app (a remote space's machine) ------
+test("install.sh --host-only: the host and the chat templates, nothing in an app home, no layout, keys or notes; --uninstall takes the templates out", () => {
+  const d = mkdtempSync(join(tmpdir(), "herdr-chat-hostonly-"));
+  const h = join(d, "home");
+  const app = join(d, "app"); // HERDR_APP_HOME, which never comes to exist
+  mkdirSync(join(h, ".claude"), { recursive: true });
+  mkdirSync(join(h, ".codex"), { recursive: true });
+  writeFileSync(join(h, ".codex", "AGENTS.md"), "codex rules\n");
+  mkdirSync(join(d, "pi"));
+  // hc and two agents as stubs; no herdr-app anywhere on PATH.
+  const bin = join(d, "bin");
+  mkdirSync(bin);
+  for (const a of ["hc", "claude", "codex"]) writeFileSync(join(bin, a), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const nodeDir = join(d, "node");
+  mkdirSync(nodeDir);
+  execFileSync("ln", ["-s", process.execPath, join(nodeDir, "node")]);
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(HERDR_|HC_|XDG_)/.test(k)));
+  const env = { ...clean, PATH: `${bin}:${nodeDir}:/usr/bin:/bin`, HOME: h, HERDR_APP_HOME: app, XDG_CONFIG_HOME: join(d, "config"), XDG_DATA_HOME: join(d, "data"), PI_CODING_AGENT_DIR: join(d, "pi"), CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" };
+  const sh = (...a: string[]) => {
+    const r = spawnSync(join(ROOT, "install.sh"), a, { encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return r.stdout;
+  };
+  const tpl = join(d, "config", "herdr-core", "templates");
+
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const out = sh("--host-only");
+  const host = join(ROOT, "bin", "herdr-chat-host");
+  assert.match(out, new RegExp(`^herdr-chat: host: ${esc(host)}$`, "m"), "says where the host command is");
+  const built = spawnSync(host, ["build"], { encoding: "utf8", env });
+  assert.equal(built.status, 0, built.stderr);
+  assert.ok(JSON.parse(built.stdout).build, "the host it names runs");
+  for (const p of ["claude", "codex"]) assert.match(readFileSync(join(tpl, `${p}-chat.md`), "utf8"), new RegExp(`command: '${esc(ROOT)}/bin/herdr-chat-subagent' --provider ${p}\n`));
+  assert.ok(!existsSync(join(tpl, "pi-chat.md")), "no template for an agent that isn't on PATH");
+  assert.ok(!existsSync(app) && !existsSync(join(h, ".config", "herdr-app")), "no app home written");
+  assert.equal(readFileSync(join(h, ".codex", "AGENTS.md"), "utf8"), "codex rules\n", "no sub-agents note");
+  assert.ok(!existsSync(join(h, ".claude", "CLAUDE.md")) && !existsSync(join(d, "pi", "AGENTS.md")) && !existsSync(join(d, "pi", "extensions")), "no notes, no Pi extension");
+
+  const quiet = mkdtempSync(join(tmpdir(), "herdr-chat-hostonly-q-"));
+  const q = spawnSync(join(ROOT, "install.sh"), ["--host-only", "--no-subagents"], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: quiet } });
+  assert.equal(q.status, 0, q.stdout + q.stderr);
+  assert.ok(!existsSync(join(quiet, "herdr-core")), "--no-subagents: no templates");
+
+  writeFileSync(join(tpl, "pi-chat.md"), "mine\n");
+  sh("--host-only", "--uninstall");
+  assert.ok(!existsSync(join(tpl, "claude-chat.md")) && !existsSync(join(tpl, "codex-chat.md")), "our templates removed");
+  assert.equal(readFileSync(join(tpl, "pi-chat.md"), "utf8"), "mine\n", "someone else's template left alone");
+  assert.ok(!existsSync(app));
+});
+
 // --- slots another plugin holds: install/layout.ts ----------------------------------------
 // A layout where another plugin (here gitview-agents, gitview's convention: what it replaced in
 // props.replaces) holds the agents block, and another mod is the right-click menu.

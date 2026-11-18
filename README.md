@@ -79,6 +79,12 @@ window to "add the mod at github.com/ChmaraX/herdr-chat".
 - **Options:** `--no-subagents` (no sub-agent templates or notes),
   `--no-layout` (leave your layout alone). The full list of what install
   changes is in [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
+- **Host only:** on a machine without the Herdr app (one a remote space runs
+  on), `--host-only` installs just the host and the sub-agent chat templates
+  (`--no-subagents`: none). It writes nothing in an app home, no layout, keys
+  or agent notes, and prints the host's path. In a clone,
+  `./install.sh --host-only`; `--host-only --uninstall` takes the templates
+  out.
 
 ## Quick start
 
