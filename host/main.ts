@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// herdr-chat-host: serve | run | tui-session | inspect | send | op | build
+// herdr-chat-host: serve | run | tui-session | inspect | send | op | relay | bridge | build
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,6 +18,10 @@ import { appHomeOf, labelSelf, newChatId, planSubagent } from "./subagent.ts";
 import { readChatConfig } from "./settings.ts";
 import { PaneWatch } from "./panewatch.ts";
 import { hostBuild } from "./build.ts";
+import { Relay, relayPath } from "./relay.ts";
+import { runBridge } from "./bridge.ts";
+import { DEFAULT_LINK_TIMES } from "./relaylink.ts";
+import type { LinkTimes } from "./relaylink.ts";
 
 const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
   (--app-home: the Herdr app's home, whose app it asks to close its hidden pane once its chat's pane is gone; default $HERDR_APP_HOME, else ~/.config/herdr-app)
@@ -30,6 +34,10 @@ herdr-chat-host inspect --chat <id> --state-dir <dir> [--wait 'phase=idle,items>
   (inspect/send/op wait up to --timeout seconds, default 10 s for connecting and 30 s for --wait, for a starting host)
 herdr-chat-host send    --chat <id> --state-dir <dir> [--mode auto|steer|followUp] [--image <path>]... <text>
 herdr-chat-host op      --chat <id> --state-dir <dir> <op> ['<json args>']
+herdr-chat-host relay   --machine <name> [--state-dir <dir>] [--host <cmd there>] [--node <path there>] [--remote-state-dir <dir there>] [--hc <hc>]
+  (where the app runs, one per machine: a WebSocket on 127.0.0.1 for that machine's chats, carried over herdr-core's machine link; writes <state-dir>/relays/<machine>.json)
+herdr-chat-host bridge  <chat> [--state-dir <dir>]
+  (on the chat's machine, in the core terminal the relay starts: joins that terminal to the host's Unix socket)
 herdr-chat-host build
   (this host's {version, build} as JSON: the install records it, so a chat can tell a host older than the install)`;
 
@@ -193,6 +201,44 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   }
 }
 
+function linkTimes(a: Args): LinkTimes {
+  const ms = (k: string, d: number): number => {
+    const v = Number(a.flags.get(k)?.[0] ?? d);
+    return v > 0 ? v : d;
+  };
+  return { pingMs: ms("ping-ms", DEFAULT_LINK_TIMES.pingMs), deadMs: ms("dead-ms", DEFAULT_LINK_TIMES.deadMs) };
+}
+
+async function relay(a: Args): Promise<void> {
+  const machine = a.flags.get("machine")?.[0] ?? die("relay needs --machine");
+  if (!/^[\w.-]+$/.test(machine)) die("--machine must be [A-Za-z0-9_.-]");
+  const stateDir = resolve(a.flags.get("state-dir")?.[0] ?? defaultStateDir());
+  const logFile = join(stateDir, "relays", `${machine}.log`);
+  mkdirSync(join(stateDir, "relays"), { recursive: true, mode: 0o700 });
+  const log = (m: string): void => {
+    try {
+      appendFileSync(logFile, `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 });
+    } catch {}
+  };
+  const r = new Relay({
+    machine, stateDir, log,
+    host: a.flags.get("host")?.[0] ?? "herdr-chat-host",
+    node: a.flags.get("node")?.[0] ?? null,
+    remoteStateDir: a.flags.get("remote-state-dir")?.[0] ?? ".local/state/herdr-chat",
+    hc: a.flags.get("hc")?.[0] ?? process.env.HERDR_CHAT_HC ?? "hc",
+    times: linkTimes(a),
+  });
+  const port = await r.listen();
+  log(`relay machine=${machine} ws=127.0.0.1:${port} pid=${process.pid} registry=${relayPath(stateDir, machine)}`);
+  const stop = (): void => {
+    log("shutting down");
+    void r.close().finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  process.on("SIGHUP", stop);
+}
+
 async function withClient<T>(a: Args, fn: (c: ChatClient) => Promise<T>): Promise<T> {
   const chatId = a.flags.get("chat")?.[0] ?? die("needs --chat");
   const stateDir = resolve(a.flags.get("state-dir")?.[0] ?? defaultStateDir());
@@ -221,6 +267,15 @@ async function main(): Promise<void> {
   switch (a.cmd) {
     case "serve":
       return serve(a);
+    case "relay":
+      return relay(a);
+    case "bridge": {
+      const chat = a.rest[0] ?? die("bridge needs a chat");
+      if (!/^[\w.-]+$/.test(chat)) die("the chat must be [A-Za-z0-9_.-]");
+      // A relative state dir is from this machine's home, as the relay's file.read reads it.
+      const stateDir = resolve(homedir(), a.flags.get("state-dir")?.[0] ?? defaultStateDir());
+      return runBridge({ chat, stateDir, times: linkTimes(a) });
+    }
     case "build":
       process.stdout.write(JSON.stringify(hostBuild()) + "\n");
       return;

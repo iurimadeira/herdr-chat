@@ -2,8 +2,10 @@ import { createServer } from "node:net";
 import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server, Socket } from "node:net";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer } from "ws";
+import type { WebSocket } from "ws";
+import { tokenMatches, tcpPeer, wsPeer, WS_ACK } from "./peer.ts";
+import type { Peer } from "./peer.ts";
 import { LineFramer, MAX_RECORD_BYTES } from "./framing.ts";
 import type { Chat, Patch, Sink } from "./chat.ts";
 import { hostBuild } from "./build.ts";
@@ -13,87 +15,6 @@ const HELLO_TIMEOUT_MS = 5000;
 const MAX_CLIENT_BUFFER = 64 * 1024 * 1024;
 /** Keepalive: a read on Herdr's `net` module fails after ~30 s idle (a mod on the legacy TCP link). */
 const PING_MS = Number(process.env.HERDR_CHAT_PING_MS ?? "15000") || 15000;
-
-function tokenMatches(given: unknown, expected: string): boolean {
-  if (typeof given !== "string") return false;
-  const a = createHash("sha256").update(given).digest();
-  const b = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(a, b);
-}
-
-interface Peer {
-  send(json: string): void;
-  buffered(): number;
-  end(): void;
-  destroy(): void;
-  readonly open: boolean;
-  readonly keepalive: boolean;
-}
-
-function tcpPeer(socket: Socket, keepalive = true): Peer {
-  return {
-    send: (json) => void socket.write(json + "\n"),
-    buffered: () => socket.writableLength,
-    end: () => void socket.end(),
-    destroy: () => void socket.destroy(),
-    get open() { return !socket.destroyed; },
-    keepalive,
-  };
-}
-
-/**
- * Herdr's runtime closes a WebSocket when 8 messages wait unread, as they do while any mod keeps
- * the app's JS thread busy. So the mod ACKs each message as it reads it, and at most WS_WINDOW
- * go unacknowledged; records wait here meanwhile and go out together when a slot frees, in
- * messages of at most MAX_RECORD_BYTES (the runtime's message limit too).
- */
-const WS_WINDOW = 4;
-const WS_ACK = '{"t":"ack"}';
-
-function wsPeer(ws: WebSocket): Peer & { acked(): void } {
-  const waiting: { json: string; bytes: number }[] = [];
-  let waitingBytes = 0;
-  let unacked = 0;
-  let ending = false;
-  const pump = (): void => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    while (unacked < WS_WINDOW && waiting.length) {
-      let n = 0;
-      let size = 0;
-      for (const r of waiting) {
-        const joined = n === 0 ? r.bytes : size + 1 + r.bytes;
-        if (n > 0 && joined > MAX_RECORD_BYTES) break;
-        size = joined;
-        n++;
-      }
-      const batch = waiting.splice(0, n);
-      for (const r of batch) waitingBytes -= r.bytes;
-      ws.send(batch.map((r) => r.json).join("\n"));
-      unacked++;
-    }
-    if (ending && !waiting.length) ws.close(1000);
-  };
-  return {
-    send: (json) => {
-      const bytes = Buffer.byteLength(json);
-      waiting.push({ json, bytes });
-      waitingBytes += bytes;
-      pump();
-    },
-    acked: () => {
-      if (unacked > 0) unacked--;
-      pump();
-    },
-    buffered: () => waitingBytes + ws.bufferedAmount,
-    end: () => {
-      ending = true;
-      pump();
-    },
-    destroy: () => ws.terminate(),
-    get open() { return ws.readyState === WebSocket.OPEN; },
-    keepalive: false,
-  };
-}
 
 class Client {
   peer: Peer;
