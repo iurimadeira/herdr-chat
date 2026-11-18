@@ -67,7 +67,8 @@ function processVariable(pid: number, name: string): string | null | undefined {
   } catch {
     return undefined;
   }
-  if (!line.trim()) return undefined;
+  // No PATH or HOME: ps showed the command without its environment (not unset).
+  if (!/(?:^|\s)(?:PATH|HOME)=/.test(line)) return undefined;
   const m = new RegExp(`(?:^|\\s)${name}=(\\S*)`).exec(line);
   return m?.[1] || null;
 }
