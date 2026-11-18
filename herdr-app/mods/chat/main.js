@@ -140,7 +140,10 @@ export default class HerdrChat extends View {
     });
     this.conn = new Connection({
       chat: this.chat,
-      cwd: this.cwd ?? home(),
+      // A chat in a remote space (new-chat's props.machine): its host runs on that machine,
+      // in the space's folder there, else that machine's home (remote.js).
+      machine: p.machine ?? null,
+      cwd: p.machine ? this.cwd : this.cwd ?? home(),
       session: p.session ?? null,
       provider: this.provider,
       hostEnv: p.hostEnv ?? null,
@@ -665,7 +668,8 @@ export default class HerdrChat extends View {
       const missing = new Set();
       for (const t of terminals()) {
         const chat = t.labels?.["herdr-chat.chat"];
-        if (t.state !== "live" || !chat) continue;
+        // Another machine's (machine/id): its chats' panes are in that machine's layout document, not this one.
+        if (t.state !== "live" || !chat || String(t.address).includes("/")) continue;
         // The shell herdr-core restored in a host's place (connection.js runsHost): nobody's, end it.
         const shell = !runsHost(t);
         // A sub-agent (a parent, or the launcher's role=subagent) has no pane by design: never an orphan.

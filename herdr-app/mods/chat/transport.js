@@ -10,6 +10,7 @@ import net from "net";
 import { WebSocket } from "websocket";
 import { Buffer } from "buffer";
 import { message } from "./util.js";
+import { TOKEN_HEADER, wsUrl } from "./remote.js";
 
 const LINKS = Symbol.for("herdr-chat.links");
 const BUILDS = Symbol.for("herdr-chat.builds");
@@ -25,14 +26,17 @@ const closedByEitherSide = (e) => /closed/i.test(message(e));
 // read, before the records are applied, so the next ones are already on their way.
 const ACK = JSON.stringify({ t: "ack" });
 
-export async function openLink(entry) {
-  return entry.wsPort ? wsLink(entry.wsPort) : legacyTcpLink(entry.port);
+// A remote chat's host (remote.js): the address its registry entry advertises, the token in
+// a header too (off loopback the host refuses an upgrade without it).
+export async function openLink(entry, { remote = false } = {}) {
+  if (remote) return wsLink(() => WebSocket.connect(wsUrl(entry.address, entry.wsPort), { headers: { [TOKEN_HEADER]: entry.token } }));
+  return entry.wsPort ? wsLink(() => WebSocket.connect(`ws://127.0.0.1:${entry.wsPort}/`)) : legacyTcpLink(entry.port);
 }
 
-async function wsLink(port) {
+async function wsLink(connect) {
   const links = (globalThis[LINKS] ??= new Set());
   retireOlderBuilds(links);
-  const ws = await WebSocket.connect(`ws://127.0.0.1:${port}/`);
+  const ws = await connect();
   let closed = false;
   const link = {
     kind: "websocket",

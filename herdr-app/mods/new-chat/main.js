@@ -41,7 +41,9 @@ async function openChat(provider) {
   const space = spaces().find((s) => s.id === f?.space);
   const cwd = f?.cwd || space?.folder || null;
   const chat = `c-${randomBytes(4).toString("hex")}`;
-  run("tab.new", { name: provider, mod: "chat", props: { chat, provider, ...(cwd ? { cwd } : {}) } });
+  // A remote space's chat runs its host on that machine (chat/remote.js); cwd is a path there.
+  const machine = space?.machine ?? null;
+  run("tab.new", { name: provider, mod: "chat", props: { chat, provider, ...(cwd ? { cwd } : {}), ...(machine ? { machine } : {}) } });
   await fs.mkdir(`${appHome()}/data/herdr-chat`, { recursive: true });
   await fs.writeFile(PREFS(), JSON.stringify({ last: provider }));
 }

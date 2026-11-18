@@ -1,5 +1,6 @@
 import { appHome, hc, readTextFile, terminals } from "herdr";
 import { openLink } from "./transport.js";
+import { machineConfig, remoteRegistryPath, remoteStartArgs } from "./remote.js";
 import { DEFAULT_PROVIDER, MOD, message } from "./util.js";
 
 export const stateDir = () => `${appHome()}/data/herdr-chat`;
@@ -37,9 +38,15 @@ export async function readConfig() {
   return { host: cfg.host ?? null, node: cfg.node ?? null, hc: cfg.hc ?? null, version: cfg.version ?? null, build: cfg.build ?? null, installedAt: cfg.installedAt ?? null, agent };
 }
 
-export async function readRegistry(chat) {
+/** A machine's entry in the person's settings (remote.js machineConfig): {error} when it can't start a host. */
+export async function readMachine(name) {
+  return machineConfig(await readJson(settingsPath()), name);
+}
+
+// `machine`: a remote chat's (readMachine), whose host's entry is on that machine.
+export async function readRegistry(chat, machine = null) {
   try {
-    const text = await readTextFile(registryPath(chat));
+    const text = machine ? await readTextFile(remoteRegistryPath(machine, chat), { on: machine.name }) : await readTextFile(registryPath(chat));
     return text ? JSON.parse(text) : null;
   } catch {
     return null;
@@ -73,7 +80,7 @@ export function startError(text, cwd) {
 const BACKOFF = [250, 500, 1000, 2000, 2000];
 
 export class Connection {
-  // opts: {chat, cwd, attachOnly (never start a host), place: () => ({space, tab}) | null (a host starts only once the chat's tab is known), session, hostEnv, handOver ({pid, model, thinking} | null), onRecord(rec, cx), onChange(cx), log}
+  // opts: {chat, machine (a remote space's, remote.js) | null, cwd, attachOnly (never start a host), place: () => ({space, tab}) | null (a host starts only once the chat's tab is known), session, hostEnv, handOver ({pid, model, thinking} | null), onRecord(rec, cx), onChange(cx), log}
   constructor(opts) {
     this.o = opts;
     this.status = "connecting"; // connecting | starting | connected | reconnecting | stopped | failed
@@ -133,16 +140,24 @@ export class Connection {
 
   // One connection attempt and, when it works, its whole read loop.
   async once(cx) {
-    const entry = await readRegistry(this.o.chat);
+    // A chat in a remote space (opts.machine): its machine's entry, read again on each attempt.
+    const machine = this.o.machine ? await readMachine(this.o.machine) : null;
+    if (machine?.error) {
+      this.startFailed = true;
+      this.set("failed", machine.error, cx);
+      return;
+    }
+    const entry = await readRegistry(this.o.chat, machine);
     if (!entry?.port || !entry?.pid) {
-      await this.ensureHost(cx, entry);
+      await this.ensureHost(cx, entry, machine);
       return;
     }
     let link;
     try {
-      link = await openLink(entry);
+      link = await openLink(entry, { remote: Boolean(machine) });
     } catch (e) {
-      await this.ensureHost(cx, entry);
+      if (machine) this.o.log?.(`connect ${machine.name}: ${message(e)}`);
+      await this.ensureHost(cx, entry, machine);
       return;
     }
     this.link = link;
@@ -191,7 +206,7 @@ export class Connection {
 
   // No host answered: start one, unless a live terminal already runs it
   // (it may still be starting) or we just did.
-  async ensureHost(cx, entry) {
+  async ensureHost(cx, entry, machine = null) {
     const live = hostTerminal(this.o.chat);
     // A sub-agent's chat only attaches: its host is the parent's to start and end.
     if (this.o.attachOnly) {
@@ -209,17 +224,29 @@ export class Connection {
       this.set("stopped", "The chat's host stopped", cx);
       return;
     }
-    const place = this.o.place?.();
-    if (!place) {
+    // A remote chat's tab is in its machine's layout document, not the app's: its
+    // host starts without it (and without a hidden pane yet).
+    const place = machine ? null : this.o.place?.();
+    if (!machine && !place) {
       this.set("connecting", "waiting for the chat's tab", cx);
       return;
     }
     this.startedHostAt = Date.now();
     this.set("starting", null, cx);
-    const cfg = await readConfig();
     // The chat's agent: its props, else what the registry recorded (a reopened chat keeps it).
     const provider = this.o.provider ?? entry?.provider ?? DEFAULT_PROVIDER;
     this.provider = provider;
+    const session = this.o.session ?? entry?.sessionFile ?? null;
+    if (machine) {
+      const r = await hc(remoteStartArgs({ machine, chat: this.o.chat, cwd: this.o.cwd, provider, session }));
+      this.o.log?.(`hc run host on ${machine.name}: code ${r.code} ${r.stdout.trim()} ${r.stderr.trim()}`);
+      if (r.code !== 0) {
+        this.startFailed = true;
+        this.set("failed", `${machine.name}: ${startError((r.stderr || r.stdout).trim(), this.o.cwd ?? "~")}`, cx);
+      }
+      return;
+    }
+    const cfg = await readConfig();
     const host = cfg.host;
     const agent = cfg.agent(provider);
     if (!host) {
@@ -229,7 +256,6 @@ export class Connection {
     }
     const env = { ...agent.env, ...(this.o.hostEnv ?? {}) };
     if (cfg.node) env.HERDR_CHAT_NODE = cfg.node;
-    const session = this.o.session ?? entry?.sessionFile ?? null;
     const args = [
       // No --name: the registry and the herdr-chat.chat label identify it, and
       // Herdr's toasts then show the title the host sets (OSC 0). No herdr.*
