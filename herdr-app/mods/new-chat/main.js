@@ -263,6 +263,9 @@ export default class NewChat extends View {
     });
     cx.spawn(async (cx) => {
       try {
+        // knownAgents() is this Mac's: a remote space's chat runs the agent on its machine, so offer every one.
+        const f = focused();
+        if (spaces().find((s) => s.id === f?.space)?.machine) return;
         const known = await knownAgents();
         this.installed = Object.fromEntries(CHOICES.map((c) => [c.id, known.find((a) => a.key === c.id)?.installed !== false]));
       } catch {}

@@ -7,16 +7,18 @@ const LAB = {
   address: "lab.tailfd0955.ts.net",
   host: "/home/me/herdr-chat/bin/herdr-chat-host",
   node: "/home/me/.asdf/shims/node",
+  hc: "/home/me/.local/bin/hc",
   agents: { claude: "/home/me/.local/bin/acc", codex: "/home/me/.local/bin/aco" },
 };
 
-test("a machine's entry: its address, host, node and agent commands; nothing else", () => {
+test("a machine's entry: its address, host, node, hc and agent commands; nothing else", () => {
   const m = machineConfig({ machines: { lab: LAB }, env: { SECRET: "x" } }, "lab");
   assert.equal(m.error, undefined);
   assert.equal(m.name, "lab");
   assert.equal(m.address, LAB.address);
   assert.equal(m.host, LAB.host);
   assert.equal(m.node, LAB.node);
+  assert.equal(m.hc, LAB.hc);
   assert.equal(m.stateDir, null);
   assert.equal(m.agent("claude"), "/home/me/.local/bin/acc");
   assert.equal(m.agent("codex"), "/home/me/.local/bin/aco");
@@ -37,7 +39,7 @@ test("the remote start: hc run --on the machine, in the space's folder, listenin
   assert.deepEqual(args, [
     "run", "--on", "lab", "--bg", "--json", "--keep", "--no-parent", "--cwd", "/home/me/proj",
     "--label", "herdr-chat.chat=c-1", "--label", "herdr-chat.role=host",
-    "--", "/usr/bin/env", `HERDR_CHAT_NODE=${LAB.node}`,
+    "--", "/usr/bin/env", `HERDR_CHAT_NODE=${LAB.node}`, `HERDR_CHAT_HC=${LAB.hc}`,
     LAB.host, "serve", "--chat", "c-1", "--cwd", "/home/me/proj",
     "--listen", LAB.address, "--provider", "claude", "--claude", "/home/me/.local/bin/acc",
   ]);

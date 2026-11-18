@@ -12,7 +12,7 @@ const DEFAULT_STATE_DIR = ".local/state/herdr-chat";
 const str = (v) => (typeof v === "string" && v ? v : null);
 
 /**
- * The machine's entry in the person's settings: `machines.<name> = {address, host, node?, stateDir?, agents: {claude?, codex?, pi?}}`.
+ * The machine's entry in the person's settings: `machines.<name> = {address, host, node?, hc?, stateDir?, agents: {claude?, codex?, pi?}}`.
  * `{error}` when it's missing what a start needs.
  */
 export function machineConfig(settings, name) {
@@ -29,6 +29,7 @@ export function machineConfig(settings, name) {
     address,
     host,
     node: str(m.node),
+    hc: str(m.hc),
     stateDir: str(m.stateDir),
     agent: (provider) => str(agents[provider]),
   };
@@ -50,7 +51,7 @@ export function remoteStartArgs({ machine, chat, cwd, provider, session }) {
     "run", "--on", machine.name, "--bg", "--json", "--keep", "--no-parent",
     ...(cwd ? ["--cwd", cwd] : []),
     "--label", `herdr-chat.chat=${chat}`, "--label", "herdr-chat.role=host",
-    "--", "/usr/bin/env", ...(machine.node ? [`HERDR_CHAT_NODE=${machine.node}`] : []),
+    "--", "/usr/bin/env", ...(machine.node ? [`HERDR_CHAT_NODE=${machine.node}`] : []), ...(machine.hc ? [`HERDR_CHAT_HC=${machine.hc}`] : []),
     machine.host, "serve", "--chat", chat,
     ...(cwd ? ["--cwd", cwd] : []),
     ...(machine.stateDir ? ["--state-dir", machine.stateDir] : []),

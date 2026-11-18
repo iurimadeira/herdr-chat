@@ -9,8 +9,9 @@
 #                        [--machine lab] [--ssh lab] [--base DIR]
 #
 # Before: the machine has this branch checked out at --checkout with `npm ci`
-# run, and node, acc and aco on its login shell's PATH (asked over ssh; set
-# NODE_PATH_REMOTE, CLAUDE_REMOTE, CODEX_REMOTE to override).
+# run, and node, acc, aco and hc on its login shell's PATH (asked over ssh; set
+# NODE_PATH_REMOTE, CLAUDE_REMOTE, CODEX_REMOTE, HC_REMOTE to override). The Mac's
+# hc and the machine's should be the same version (hc machine add asks otherwise).
 # Stop: quit the private app, then `HC_SESSION=<printed> hc server stop`.
 set -euo pipefail
 
@@ -25,7 +26,7 @@ while [ $# -gt 0 ]; do
     --machine) MACHINE=$2; shift ;;
     --ssh) SSH_HOST=$2; shift ;;
     --base) BASE=$2; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^set -e/ { exit } NR > 1' "$0"; exit 0 ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -33,10 +34,11 @@ done
 [ -n "$CHECKOUT" ] && [ -n "$ADDRESS" ] || die "--checkout and --address are required (--help)"
 case "$CHECKOUT" in /*) ;; *) die "--checkout must be absolute" ;; esac
 
-remote_which() { ssh "$SSH_HOST" -- zsh -lc "'command -v $1'" 2>/dev/null | tail -1; }
+remote_which() { ssh "$SSH_HOST" -- zsh -lc "'command -v $1'" 2>/dev/null | tail -1 || true; }
 LAB_NODE=${NODE_PATH_REMOTE:-$(remote_which node)}
 LAB_ACC=${CLAUDE_REMOTE:-$(remote_which acc)}
 LAB_ACO=${CODEX_REMOTE:-$(remote_which aco)}
+LAB_HC=${HC_REMOTE:-$(remote_which hc)}
 [ -n "$LAB_NODE" ] || die "no node on $SSH_HOST (set NODE_PATH_REMOTE)"
 ssh "$SSH_HOST" -- test -x "$CHECKOUT/bin/herdr-chat-host" -a -d "$CHECKOUT/node_modules" ||
   die "$SSH_HOST:$CHECKOUT has no bin/herdr-chat-host or node_modules (check out the branch there and run npm ci)"
@@ -48,6 +50,8 @@ BASE="$(cd "$BASE" && pwd -P)"
 for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$v"; done
 export HERDR_APP_HOME="$BASE/home" XDG_STATE_HOME="$BASE/state" XDG_CONFIG_HOME="$BASE/config" XDG_DATA_HOME="$BASE/data"
 export HC_SESSION="proof$$" HERDR_TELEMETRY=0 DO_NOT_TRACK=1
+export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
+export PI_CODING_AGENT_DIR="$BASE/pi"        # install.sh puts Pi's lock extension there, not in ~/.pi
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 real_home="$(cd "$HOME" && pwd -P)/.config/herdr-app"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
@@ -69,16 +73,19 @@ for _ in $(seq 60); do "$APP" status >/dev/null 2>&1 && break; sleep 0.5; done
 "$APP" status >/dev/null 2>&1 || die "the private app didn't answer (see $BASE/app.log)"
 
 (cd "$REPO" && ./install.sh) >"$BASE/install.log" 2>&1 || die "install failed (see $BASE/install.log)"
-hc machine add "$SSH_HOST" --name "$MACHINE" --session "proof$$" >/dev/null || die "hc machine add $SSH_HOST failed"
+hc machine add "$SSH_HOST" --name "$MACHINE" --session "proof$$" || die "hc machine add $SSH_HOST failed"
 
 STATE="$HERDR_APP_HOME/data/herdr-chat"
 mkdir -p "$STATE"
-python3 - "$STATE/settings.json" "$MACHINE" "$ADDRESS" "$CHECKOUT/bin/herdr-chat-host" "$LAB_NODE" "$LAB_ACC" "$LAB_ACO" <<'EOF'
+python3 - "$STATE/settings.json" "$MACHINE" "$ADDRESS" "$CHECKOUT/bin/herdr-chat-host" "$LAB_NODE" "$LAB_HC" "$LAB_ACC" "$LAB_ACO" <<'EOF'
 import json, os, sys
-path, name, address, host, node, acc, aco = sys.argv[1:]
+path, name, address, host, node, hc, acc, aco = sys.argv[1:]
 s = json.load(open(path)) if os.path.exists(path) else {}
 agents = {k: v for k, v in (("claude", acc), ("codex", aco)) if v}
-s.setdefault("machines", {})[name] = {"address": address, "host": host, "node": node, "agents": agents}
+m = {"address": address, "host": host, "node": node, "agents": agents}
+if hc:
+    m["hc"] = hc
+s.setdefault("machines", {})[name] = m
 json.dump(s, open(path, "w"), indent=1)
 EOF
 
