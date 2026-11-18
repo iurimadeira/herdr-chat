@@ -1,4 +1,6 @@
 import { createServer } from "node:net";
+import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Server, Socket } from "node:net";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -28,14 +30,14 @@ interface Peer {
   readonly keepalive: boolean;
 }
 
-function tcpPeer(socket: Socket): Peer {
+function tcpPeer(socket: Socket, keepalive = true): Peer {
   return {
     send: (json) => void socket.write(json + "\n"),
     buffered: () => socket.writableLength,
     end: () => void socket.end(),
     destroy: () => void socket.destroy(),
     get open() { return !socket.destroyed; },
-    keepalive: true,
+    keepalive,
   };
 }
 
@@ -122,6 +124,8 @@ export class ChatServer implements Sink {
   token: string;
   server: Server;
   wss: WebSocketServer | null = null;
+  unix: Server | null = null;
+  socketPath: string | null = null;
   clients = new Set<Client>();
   log: (msg: string) => void;
   port = 0;
@@ -164,6 +168,39 @@ export class ChatServer implements Sink {
     return { port: this.port, wsPort: this.wsPort };
   }
 
+  /**
+   * Also serves JSONL on a Unix socket at `path` with mode 0600: a remote chat's bridge connects
+   * there (protocol.md "Relay and bridge"). Returns the path, or null when it can't listen
+   * (the log says why); local chats don't need it.
+   */
+  async listenUnix(path: string): Promise<string | null> {
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      // A socket left by a host of this chat that died: chat ids are unique, so it's ours.
+      try {
+        unlinkSync(path);
+      } catch {}
+      const unix = createServer((s) => this.acceptTcp(s, false));
+      await new Promise<void>((resolve, reject) => {
+        unix.once("error", reject);
+        // The umask makes the socket 0600 from the bind on; listen binds synchronously.
+        const umask = process.umask(0o177);
+        try {
+          unix.listen(path, () => resolve());
+        } finally {
+          process.umask(umask);
+        }
+      });
+      chmodSync(path, 0o600);
+      this.unix = unix;
+      this.socketPath = path;
+      return path;
+    } catch (e) {
+      this.log(`unix socket ${path}: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
+  }
+
   /** Stops listening and ends every client; one that doesn't close its side in 500 ms is cut, so a shutdown never waits on a client. */
   close(): Promise<void> {
     clearInterval(this.pinger);
@@ -172,13 +209,14 @@ export class ChatServer implements Sink {
     const closing = [
       new Promise<void>((r) => this.server.close(() => r())),
       new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r())),
+      new Promise<void>((r) => (this.unix ? this.unix.close(() => r()) : r())),
     ];
     return Promise.all(closing).then(() => clearTimeout(cut));
   }
 
-  private acceptTcp(socket: Socket): void {
-    socket.setNoDelay(true);
-    const conn = this.attach(tcpPeer(socket));
+  private acceptTcp(socket: Socket, keepalive = true): void {
+    if (keepalive) socket.setNoDelay(true);
+    const conn = this.attach(tcpPeer(socket, keepalive));
     const framer = new LineFramer();
     framer.onOversized = (o) => this.log(`dropped an oversized client record (${o.size} bytes)`);
     framer.onLine = conn.receive;

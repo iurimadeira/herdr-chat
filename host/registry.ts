@@ -13,6 +13,8 @@ export type RegistryEntry = {
   port: number | null;
   /** WebSocket, for the Herdr mod (protocol.md "Transport"). Absent before 0.4: such a host speaks only JSONL. */
   wsPort?: number | null;
+  /** JSONL over a Unix socket (mode 0600, `<stateDir>/chats/<chat>.sock`): what a remote chat's bridge connects to. Absent before 0.6. */
+  socket?: string | null;
   token: string;
   cwd: string;
   sessionFile: string | null;
@@ -26,6 +28,11 @@ export type RegistryEntry = {
 
 export function registryPath(stateDir: string, chat: string): string {
   return join(stateDir, "chats", `${chat}.json`);
+}
+
+/** The host's Unix socket, beside its registry entry. */
+export function socketPath(stateDir: string, chat: string): string {
+  return join(stateDir, "chats", `${chat}.sock`);
 }
 
 export function atomicWrite(path: string, text: string, mode = 0o600): void {

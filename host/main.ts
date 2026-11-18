@@ -8,7 +8,7 @@ import { Chat } from "./chat.ts";
 import { Attachments } from "./attachments.ts";
 import { ChatServer } from "./server.ts";
 import { Terminal } from "./terminal.ts";
-import { writeRegistry, readRegistry, pidAlive } from "./registry.ts";
+import { writeRegistry, readRegistry, pidAlive, socketPath } from "./registry.ts";
 import type { RegistryEntry } from "./registry.ts";
 import { ChatClient, parseWait } from "./client.ts";
 import { createAdapter, DEFAULT_PROVIDER, providerNames, tuiSession } from "./providers/index.ts";
@@ -79,7 +79,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   rmSync(join(stateDir, "images", chatId), { recursive: true, force: true });
   const startedAt = Date.now();
   let entry: RegistryEntry = {
-    v: 1, chat: chatId, pid: process.pid, port: null, wsPort: null, token, cwd,
+    v: 1, chat: chatId, pid: process.pid, port: null, wsPort: null, socket: null, token, cwd,
     provider,
     // A session of another provider can't be resumed by this one.
     sessionFile: session ?? (previous?.provider === provider ? previous?.sessionFile ?? null : null),
@@ -151,7 +151,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
       await chat.stopAgent();
     } catch {}
     chat.releaseLock();
-    save({ pid: null, port: null, wsPort: null });
+    save({ pid: null, port: null, wsPort: null, socket: null });
     term.status("idle");
     term.close();
     await server.close().catch(() => {});
@@ -166,7 +166,8 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
     log(`unhandled rejection: ${(e as Error)?.stack ?? e}`);
   });
 
-  save(await server.listen());
+  const ports = await server.listen();
+  save({ ...ports, socket: await server.listenUnix(socketPath(stateDir, chatId)) });
   term.line(`herdr-chat-host · chat ${chatId} · ${cwd}`);
   if (extra.hint) term.line(extra.hint);
   if (extra.warning) term.line(`! ${extra.warning}`);
