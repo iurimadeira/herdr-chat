@@ -43,7 +43,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test --test-concurrency=4 'tests/host/*.test.ts'",
+    "test": "node --test --test-concurrency=4 'tests/host/*.test.ts' 'tests/mod/*.test.mjs'",
     "test:built": "HERDR_CHAT_TEST_HOST=\"dist/herdr-chat-$npm_package_version/host/main.js\" npm test",
     "test:install": "tests/release/install-e2e.sh",
     "typecheck": "tsc --noEmit -p .",

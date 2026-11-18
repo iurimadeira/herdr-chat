@@ -134,6 +134,12 @@ runs). A new chat picks up a change. `updates.check: false` stops the daily
 look for a new release (a release install only); `updates.feed` points it at
 another URL with GitHub's release JSON.
 
+A chat continued from a TUI (Continue as chat) keeps that TUI's agent home
+(`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, or none set): it overrides a home set in
+`env` here, for the chat, its `/tui` and `/login`, and new chats opened from
+it. Only a configured launcher command (such as `acc` or `aco`) may still
+choose its own.
+
 ## Limitations
 
 - **macOS only.** Spaces on other machines still open the agent's TUI.

@@ -17,11 +17,11 @@ import type { Args } from "./args.ts";
 import { appHomeOf, labelSelf, newChatId, planSubagent } from "./subagent.ts";
 import { readChatConfig } from "./settings.ts";
 import { PaneWatch } from "./panewatch.ts";
-import { AGENT_HOMES, type HomeAgent } from "./providers/env.ts";
+import { AGENT_HOMES } from "./providers/env.ts";
 import { hostBuild } from "./build.ts";
 
 const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--agent-home=<dir>] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
-  (--agent-home: the continued TUI's agent home, CLAUDE_CONFIG_DIR / CODEX_HOME for the agent; empty: unset)
+  (--agent-home: claude and codex only, the continued TUI's agent home, CLAUDE_CONFIG_DIR / CODEX_HOME for the agent; empty: unset)
   (--app-home: the Herdr app's home, whose app it asks to close its hidden pane once its chat's pane is gone; default $HERDR_APP_HOME, else ~/.config/herdr-app)
   (--provider defaults to the chat's registered provider, else pi; --pi <cmd> or HERDR_CHAT_PI picks the pi binary)
 herdr-chat-host run     [--provider pi|claude|codex] [--session <file> [--agent-home=<dir>]] [--cwd <dir>] [-- <agent args>]
@@ -77,15 +77,19 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   // --agent-home: the agent home of the TUI this chat continues (tui-session's
   // `home`; empty: none set, the agent's default), for the agent to inherit. The
   // host's environment is the agent's, so the variable is set or removed here; a
-  // launcher (e.g. acc) still has the last word. Kept across restarts (tab props).
-  const home = a.flags.get("agent-home")?.[0];
-  if (home !== undefined && provider in AGENT_HOMES) {
-    const { variable } = AGENT_HOMES[provider as HomeAgent];
-    if (home) process.env[variable] = home;
-    else delete process.env[variable];
+  // launcher (e.g. acc) still has the last word. Kept across restarts (the tab's
+  // props, else the registry entry). Claude Code and Codex only: Pi's home isn't
+  // looked for (its session is its label), so a stray one is ignored.
+  const homeFlag = a.flags.get("agent-home")?.[0];
+  const agentHome = homeFlag !== undefined && (provider === "claude" || provider === "codex")
+    ? { variable: AGENT_HOMES[provider].variable, value: homeFlag } : null;
+  if (agentHome) {
+    if (agentHome.value) process.env[agentHome.variable] = agentHome.value;
+    else delete process.env[agentHome.variable];
   }
   const adapter = createAdapter(provider, { cwd, args: a.after, log, ...(agentCommand ? { command: agentCommand } : {}) });
   log(`serve chat=${chatId} cwd=${cwd} session=${session ?? "-"} provider=${provider} cmd=${agentCommand ?? "(default)"} pid=${process.pid}`);
+  if (homeFlag !== undefined && !agentHome) log(`--agent-home ignored: ${provider} has no inherited home`);
 
   // Images saved by an earlier run of this chat belong to items that no longer exist.
   rmSync(join(stateDir, "images", chatId), { recursive: true, force: true });
@@ -96,6 +100,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
     // A session of another provider can't be resumed by this one.
     sessionFile: session ?? (previous?.provider === provider ? previous?.sessionFile ?? null : null),
     terminal: terminalId, startedAt, agentVersion: null, ...hostBuild(),
+    ...(agentHome ? { agentHome: agentHome.value } : {}),
   };
   const save = (patch: Partial<RegistryEntry>) => {
     entry = { ...entry, ...patch };
@@ -110,7 +115,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   const attachments = new Attachments(join(stateDir, "attachments", chatId));
   const term = new Terminal(process.stdout, process.stdin, provider);
   const chat = new Chat({
-    chat: chatId, cwd, session, adapter, terminal: terminalId, log,
+    chat: chatId, cwd, session, adapter, terminal: terminalId, log, agentHome,
     afterPid: handOver ? afterPid : null,
     imageDir: join(stateDir, "images", chatId),
     attachments,

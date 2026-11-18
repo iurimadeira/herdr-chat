@@ -114,8 +114,14 @@ on the host's home's.
 The chat's agent inherits that home: `tui-session` returns it (`home`, null
 when the TUI had none set), the mod gives it to the host (`serve
 --agent-home=<home>`, empty for none; a pane prop, so restarts keep it), and
-the host sets or removes `CLAUDE_CONFIG_DIR` / `CODEX_HOME` for its agent. A
-configured agent command (a launcher such as `acc`) may still set its own.
+the host sets or removes `CLAUDE_CONFIG_DIR` / `CODEX_HOME` for its agent. It
+overrides a home set in the configured `env` (settings.json); only a configured
+agent command (a launcher such as `acc` or `aco`) may still choose its own. The
+host records it in the registry entry (`agentHome`, "" for none), so a restored
+pane without its props keeps it, and in its state (`agentHome`): the mod runs
+`/tui` and `/login` in it (`/usr/bin/env VAR=<home>`, or `-u VAR`) and gives it
+to a new chat opened from this one (same agent, same account). Pi has no
+inherited home: serve ignores `--agent-home` for it.
 Claude Code's conflict guard reads the registry of the host's home and of the
 home the session file is in.
 

@@ -35,6 +35,7 @@ import { getDoc, hideHost, locate } from "./hostpane.js";
 import { SHORTCUTS, actionName, errors as keyErrors, keyHint, loadShortcuts, shortcuts, withKey } from "./shortcuts.js";
 import { keepKeys } from "./keymap.js";
 import { Connection, hostTerminal, readConfig, runsHost } from "./connection.js";
+import { carriedHome, handoffArgv, newChatProps } from "./agenthome.js";
 import { Store } from "./store.js";
 import { Timeline } from "./timeline.js";
 import { lineOf, planProgress, row, samePlan } from "./cards.js";
@@ -1156,9 +1157,11 @@ export default class HerdrChat extends View {
     const provider = this.providerId();
     const chat = `c-${randomBytes(4).toString("hex")}`;
     const hostEnv = props()?.hostEnv; // (E2E: the fake agent's scenario)
+    // A continued chat's agent home goes along: same agent, same account.
+    const agentHome = carriedHome(this.store.state, props()?.agentHome);
     this.lastNewChat = chat;
     run("tab.new", { name: provider, ...(place?.space ? { space: place.space } : {}), mod: MOD,
-      props: { chat, provider, ...(cwd ? { cwd } : {}), ...(session ? { session } : {}), ...(hostEnv ? { hostEnv } : {}) } });
+      props: newChatProps({ chat, provider, cwd, session, hostEnv, agentHome }) });
     this.debug.mark();
   }
 
@@ -1757,6 +1760,8 @@ export default class HerdrChat extends View {
           if (!d?.argv?.length) throw new Error("this chat has no session yet");
           argv = prog ? withProgram(d.argv, prog) : [...d.argv];
         } else argv = prog ? withProgram(utilityArgv, prog) : [...utilityArgv];
+        // In the chat's agent home (a continued TUI's), not herdr-core's environment.
+        argv = handoffArgv(argv, this.store.state.agentHome);
         // No herdr.space/tab labels: no pane, so the layout and the chat's tab stay as they are.
         const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `chat-tui-${this.chat}`, "--cwd", this.cwd ?? this.store.state.cwd ?? "/",
           "--label", `herdr-chat.tui=${this.chat}`, "--", ...argv]);

@@ -27,6 +27,7 @@ import { appHome, closeOverlay, exec, focused, hc, knownAgents, nextCommand, not
 import * as fs from "fs/promises";
 import { randomBytes } from "crypto";
 import { UpdateDialog, checkHosts, checkRelease, checkRunning } from "./update.js";
+import { inPlaceProps, subagentArgs } from "./continue.js";
 
 const CHOICES = [
   { id: "pi", label: "Pi", icon: "pi", tint: true, letter: "p" },
@@ -92,7 +93,7 @@ async function chatConfig() {
   return cfg;
 }
 
-/** The session the TUI has open, from the host (each agent's way: host/providers/<agent>/tui.ts): {session, model, thinking, args}. */
+/** The session the TUI has open, from the host (each agent's way: host/providers/<agent>/tui.ts): {session, home, model, thinking, args}; `home` (Claude Code, Codex): its agent home, null: none set. */
 async function tuiSession(cfg, agent, pid, cwd, label) {
   const r = await exec("/usr/bin/env", [...(cfg.node ? [`HERDR_CHAT_NODE=${cfg.node}`] : []), cfg.host, "tui-session",
     "--provider", agent, "--pid", String(pid), "--cwd", cwd, ...(label ? ["--label", label] : [])]);
@@ -134,10 +135,8 @@ export async function continueAsChat(addr, cx) {
   // Its name is free once the old terminal has ended.
   for (let i = 0; i < 50 && term(t.address)?.state === "live"; i++) await cx.sleep(100);
   // The model and thinking as the agent's own arguments: a sub-agent's host isn't restarted by a chat later.
-  const args = found.args ?? [];
   const r = await hc(["run", "--bg", "--json", "--parent", t.parent, ...(t.name ? ["--name", t.name] : []), "--cwd", cwd,
-    "--", launcher, "--provider", agent, "--session", found.session,
-    ...("home" in found ? [`--agent-home=${found.home ?? ""}`] : []), ...(args.length ? ["--", ...args] : [])]);
+    "--", ...subagentArgs({ launcher, agent, found })]);
   if (r.code !== 0) throw new Error(`hc run: ${r.stderr.trim() || r.stdout.trim()}`);
   const next = JSON.parse(r.stdout).address;
   // The launcher labels its terminal with the chat id once it starts.
@@ -163,7 +162,7 @@ export async function continueInPlace(t, agent, pid, cwd, found, cx) {
   const before = new Set(panes().map((p) => p.pane));
   const chat = `c-${randomBytes(4).toString("hex")}`;
   run("pane.split", { direction: "right", pane: pane.pane, mod: "chat",
-    props: { chat, provider: agent, session: found.session, afterPid: pid, cwd, ...("home" in found ? { agentHome: found.home } : {}), ...(found.model ? { model: found.model } : {}), ...(found.thinking ? { thinking: found.thinking } : {}) } });
+    props: inPlaceProps({ chat, agent, pid, cwd, found }) });
   let mine = null;
   for (let i = 0; i < 50 && !mine; i++) { mine = panes().find((p) => !before.has(p.pane) && p.mod === "chat" && p.tab === pane.tab); if (!mine) await cx.sleep(100); }
   if (!mine) throw new Error("the chat's pane didn't appear beside the TUI");

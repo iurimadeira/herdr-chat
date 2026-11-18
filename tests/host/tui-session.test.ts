@@ -13,7 +13,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { HOST_ENTRY, HOST_NODE, idle, sleep } from "./harness.ts";
+import { HOST_ENTRY, HOST_NODE, idle, sleep, startHost } from "./harness.ts";
 import { startClaude } from "../fake-claude/host.ts";
 import { codexHost } from "../fake-codex/host.ts";
 import { agentHome, psVariable, treeHomes, type ReadVariable } from "../../host/providers/tui.ts";
@@ -143,6 +143,9 @@ test("tui-session: a Claude Code TUI with its own CLAUDE_CONFIG_DIR continues as
       const start = h.inputs()[0];
       assert.equal(start?.env?.CLAUDE_CONFIG_DIR, mine, "claude runs in the TUI's home");
       assert.ok(start?.argv?.join(" ").includes("--resume 11111111-1111-4111-8111-111111111111"), "claude ran with --resume on the TUI's session");
+      // The home is the chat's: in its registry entry (a restore without the pane's props) and its state (the mod's /tui, /login, new chats).
+      assert.equal(h.registry?.agentHome, mine);
+      assert.deepEqual(h.client.state.agentHome, { variable: "CLAUDE_CONFIG_DIR", value: mine });
     } finally {
       await h.stop();
     }
@@ -165,6 +168,9 @@ test("tui-session: the chat's guard sees a Claude Code process registered in the
     await h.client.waitFor((x) => x.state.phase === "conflict", 10_000);
     assert.deepEqual(h.client.state.conflict, { chat: null, terminal: null, pid: process.pid });
     assert.equal(h.inputs().length, 0, "Claude Code never started");
+    // Not a continued chat: no home of its own.
+    assert.equal(h.registry?.agentHome, undefined);
+    assert.equal(h.client.state.agentHome, null);
   } finally {
     await h.stop();
   }
@@ -218,6 +224,8 @@ test("tui-session: a Codex TUI with its own CODEX_HOME continues as a chat on it
       assert.deepEqual(h.requests("thread/resume").map((r) => [r.params.threadId, r.params.path]), [[id, own]]);
       assert.notEqual(h.codexHome, mine);
       assert.equal(h.codexMessages().find((m) => m._start)?.env?.CODEX_HOME, mine, "codex runs in the TUI's home");
+      assert.equal(h.registry?.agentHome, mine);
+      assert.deepEqual(h.client.state.agentHome, { variable: "CODEX_HOME", value: mine });
     } finally {
       await h.stop();
     }
@@ -266,6 +274,8 @@ test("tui-session: a TUI with no CLAUDE_CONFIG_DIR / CODEX_HOME uses ~/.claude /
       await h.client.waitFor(idle, 10_000);
       assert.deepEqual(h.items("user").map((i) => i.text), ["the default home's prompt"]);
       assert.equal(h.inputs()[0]?.env?.CLAUDE_CONFIG_DIR, null, "claude runs with no CLAUDE_CONFIG_DIR");
+      assert.equal(h.registry?.agentHome, "", "none, recorded as such");
+      assert.deepEqual(h.client.state.agentHome, { variable: "CLAUDE_CONFIG_DIR", value: "" });
     } finally {
       await h.stop();
     }
@@ -313,4 +323,15 @@ test("tui-session: a sub-agent's host gets the TUI's home too (herdr-chat-subage
   assert.deepEqual(plan(["--provider", "claude", "--session", "/s.jsonl", "--agent-home=/alt"]).serve.flags.get("agent-home"), ["/alt"]);
   assert.deepEqual(plan(["--provider", "claude", "--session", "/s.jsonl", "--agent-home="]).serve.flags.get("agent-home"), [""]);
   assert.equal(plan(["--provider", "claude"]).serve.flags.get("agent-home"), undefined);
+});
+
+test("tui-session: serve ignores --agent-home for Pi (its home is never looked for), and records nothing", async () => {
+  const h = await startHost({ name: "tui-home-pi", hostArgs: ["--agent-home=/nowhere"] });
+  try {
+    await h.client.waitFor(idle, 10_000);
+    assert.equal(h.registry?.agentHome, undefined);
+    assert.equal(h.client.state.agentHome, null);
+  } finally {
+    await h.stop();
+  }
 });
