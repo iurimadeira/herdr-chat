@@ -21,7 +21,7 @@ export const DEFAULT_LINK_TIMES: LinkTimes = { pingMs: 5000, deadMs: 20_000 };
 
 /** What the bridge prints once its PTY is raw, before anything else. */
 export const READY_LINE = '{"t":"ready","v":1}';
-/** What the bridge prints instead when no host serves the chat: the relay refuses the mod (4003). */
+/** What the bridge prints instead when no host serves the chat: the relay closes the mod 4004 (no host, retry). */
 export const NOHOST_LINE = '{"t":"nohost","v":1}';
 export const syncLine = (nonce: string): string => `{"t":"sync","n":"${nonce}"}`;
 export const syncedLine = (nonce: string): string => `{"t":"synced","n":"${nonce}"}`;

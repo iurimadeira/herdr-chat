@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
 import { MAX_RECORD_BYTES } from "./framing.ts";
-import { CoreClient } from "./hccore.ts";
+import { CoreClient, CoreError } from "./hccore.ts";
 import type { Stream } from "./hccore.ts";
 import { atomicWrite, pidAlive } from "./registry.ts";
 import { tokenMatches, wsPeer, WS_ACK } from "./peer.ts";
@@ -36,6 +36,8 @@ const MAX_SETUPS = 8;
 
 export const CLOSE_RESYNC = 4001;
 export const CLOSE_REFUSED = 4003;
+/** No host serves the chat now (it exited, or is restarting): retry once the registry names a live host. */
+export const CLOSE_NO_HOST = 4004;
 export const CLOSE_SETUP = 1011;
 export const CLOSE_BUSY = 1013;
 export const CLOSE_STOPPING = 1001;
@@ -44,6 +46,7 @@ export const CLOSE_STOPPING = 1001;
 const REASON: Record<number, string> = {
   [CLOSE_RESYNC]: "resync",
   [CLOSE_REFUSED]: "refused",
+  [CLOSE_NO_HOST]: "no host",
   [CLOSE_SETUP]: "setup failed",
   [CLOSE_BUSY]: "busy",
   [CLOSE_STOPPING]: "relay stopping",
@@ -236,7 +239,7 @@ export class Relay {
         if (this.setups >= MAX_SETUPS) return end(CLOSE_BUSY, `busy: ${this.setups} connections setting up`);
         this.setups++;
         void setup(text)
-          .catch((e) => end(e instanceof NoHost ? CLOSE_REFUSED : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`))
+          .catch((e) => end(e instanceof NoHost ? CLOSE_NO_HOST : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`))
           .finally(() => {
             this.setups--;
           });
@@ -268,16 +271,25 @@ export class Relay {
         core = c;
         if (ended) return;
         const regPath = `${o.remoteStateDir.replace(/\/+$/, "")}/chats/${h.chat}.json`;
+        let text: string;
+        try {
+          text = (await c.call("file.read", { path: regPath, on: o.machine }, CALL_TIMEOUT_MS)).text;
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          // Only a missing file says the client will never get in; told apart from a wrong token
+          // only in the log, so the mod learns nothing of which chats exist.
+          if (e instanceof CoreError && e.kind === "not_found") return end(CLOSE_REFUSED, `no registry entry: ${why}`);
+          // A timeout, an unreachable machine, a read that failed there: worth a retry.
+          return end(CLOSE_SETUP, `registry read failed: ${why}`);
+        }
         let entry: any = null;
         try {
-          entry = JSON.parse((await c.call("file.read", { path: regPath, on: o.machine }, CALL_TIMEOUT_MS)).text);
-        } catch (e) {
-          // Told apart only in the log: the mod learns nothing of which chats exist.
-          return end(CLOSE_REFUSED, `no registry entry: ${e instanceof Error ? e.message : e}`);
-        }
+          entry = JSON.parse(text);
+        } catch {}
+        if (!entry || typeof entry !== "object") return end(CLOSE_REFUSED, "a malformed registry entry");
         // The token first: nothing starts on the machine for a client that doesn't know it.
-        if (!entry || !tokenMatches(h.token, typeof entry.token === "string" ? entry.token : "")) return end(CLOSE_REFUSED, "a wrong token");
-        if (!entry.pid) return end(CLOSE_REFUSED, "no host: the chat's host has exited");
+        if (!tokenMatches(h.token, typeof entry.token === "string" ? entry.token : "")) return end(CLOSE_REFUSED, "a wrong token");
+        if (!entry.pid) return end(CLOSE_NO_HOST, "no host: the chat's host has exited");
         if (ended) return;
         const argv = [
           ...(o.node ? ["/usr/bin/env", `HERDR_CHAT_NODE=${o.node}`] : []),

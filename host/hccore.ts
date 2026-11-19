@@ -6,6 +6,15 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
+/** An error core answered with; `kind` is its error data's (`not_found`, `io`, `machine_unknown`…). */
+export class CoreError extends Error {
+  kind: string | null;
+  constructor(message: string, kind: unknown) {
+    super(message);
+    this.kind = typeof kind === "string" ? kind : null;
+  }
+}
+
 export const KIND = { DATA: 0, CREDIT: 1, CLOSE: 2 } as const;
 const MAX_FRAME = 1 << 20;
 
@@ -144,7 +153,7 @@ export class CoreClient {
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
-    if (msg.error) p.reject(new Error(`${msg.error.message ?? "error"}${msg.error.data ? ` ${JSON.stringify(msg.error.data)}` : ""}`));
+    if (msg.error) p.reject(new CoreError(`${msg.error.message ?? "error"}${msg.error.data ? ` ${JSON.stringify(msg.error.data)}` : ""}`, msg.error.data?.kind));
     else p.resolve(msg.result);
   }
 

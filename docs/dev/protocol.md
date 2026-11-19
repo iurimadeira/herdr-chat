@@ -682,7 +682,7 @@ The relay registry:
 The mod connects to `wsPort` as it does to a host's, with one more field in `hello`: `"chat": "<chat id>"`. The relay keeps one `hc connect` for all its connections, opened on first use and again after it closes; when it closes, every connection closes with 4001. Then, per WebSocket connection:
 
 1. `hello` within 5 s, with `chat` and `token`; else close 4003. At most 8 connections set up at once; the ninth closes 1013. Until the bridge is synced the relay holds at most 1 MiB of the mod's records; more closes 4003.
-2. The relay reads `<remote-state-dir>/chats/<chat>.json` on the machine (`file.read`). No entry, an entry without a token (or an empty one), or a wrong token (compared in constant time) closes 4003, before anything runs on the machine. So does an entry with no `pid` (its host exited).
+2. The relay reads `<remote-state-dir>/chats/<chat>.json` on the machine (`file.read`). No entry (core's `not_found`), a malformed entry, an entry without a token (or an empty one), or a wrong token (compared in constant time) closes 4003, before anything runs on the machine. Any other read failure (a call timeout, core's link closed, an unreachable machine, a read error there) closes 1011. A right token with no `pid` in the entry (its host exited or is restarting) closes 4004.
 3. It runs `herdr-chat-host bridge <chat> --state-dir <remote-state-dir> --ping-ms … --dead-ms …` there (`terminal.run`, with `no_parent`, `no_notify`, `rm`, labels `herdr-chat.role=bridge` and `herdr-chat.bridge=<chat>`), attaches its terminal, and syncs (below). A bridge has no `herdr-chat.chat` label: the mod finds a chat's host by that label, and a bridge is not one.
 4. It forwards the mod's `hello`, and from then on carries records both ways. The mod's `{"t":"ack"}` stays with the relay: the relay keeps the host's ack window towards the mod (at most 4 messages unacknowledged, as a host does), and a JSONL socket needs no acks.
 5. When the WebSocket closes, the relay kills the bridge's terminal. A connection that ends while core is still starting the bridge kills it once its address comes back.
@@ -692,9 +692,10 @@ Close codes, each with a fixed reason (the detail goes only to the relay's log, 
 | Code | Reason | When | The mod |
 | --- | --- | --- | --- |
 | `4001` | `resync` | the link broke, the bridge ended, core's link closed, or the bridge stopped reading for 64 MiB | reconnects at once; a new bridge, and the snapshot after `welcome` replaces all it had |
-| `4003` | `refused` | a bad or missing hello, no registry entry, a wrong token, no host (its entry has no pid, or the bridge found none), too much before sync | stops: retrying gets the same answer |
+| `4003` | `refused` | a bad or missing hello, no registry entry, a malformed entry, a wrong token, too much before sync | stops: retrying gets the same answer |
+| `4004` | `no host` | the token is right but no host serves the chat (its entry has no pid, or the bridge found none) | re-reads its registry; reconnects once a host serves the chat (it starts one, or waits for one) |
 | `1013` | `busy` | 8 connections already setting up | reconnects later |
-| `1011` | `setup failed` | setup failed or timed out | reconnects later |
+| `1011` | `setup failed` | setup failed or timed out, or the registry read failed for another reason than a missing file | reconnects later |
 | `1001` | `relay stopping` | the relay got a stop signal | reconnects later |
 
 A resync is the only recovery from a broken link: the relay closes with 4001 and the mod reconnects. Records never resume in the middle; a snapshot replaces them, so a resync loses or repeats no turn.
@@ -707,7 +708,7 @@ Runs on the chat's machine, in the terminal the relay starts; nobody else needs 
 
 - `--state-dir` relative to `$HOME`. It logs to `<stateDir>/chats/<chat>.bridge.log` (capped like the relay's). Nothing else reaches its terminal: its stderr goes to that log.
 - It sets its PTY raw (`stty raw -echo`; exit 2 if it can't).
-- It reads the registry and connects to the socket its host's pid names (`<chat>.<pid>.sock`, never the path the entry gives). No pid, a dead pid, or a socket it can't connect to: it prints `{"t":"nohost","v":1}` and exits 4. The relay closes 4003.
+- It reads the registry and connects to the socket its host's pid names (`<chat>.<pid>.sock`, never the path the entry gives). No pid, a dead pid, or a socket it can't connect to: it prints `{"t":"nohost","v":1}` and exits 4, once that line has reached the PTY. The relay closes 4004. A socket error after it connected is no `nohost`: it exits 5.
 - Connected, it prints the READY line and waits for SYNC. No SYNC within `--dead-ms` (the relay went away during setup): exit 8.
 - After SYNC it prints SYNCED and carries records: the host's JSONL lines onto the link, the link's records onto the socket.
 - It exits when the host's socket closes (0), on a socket error after sync (5), when the link breaks or goes silent for `--dead-ms` (6), when its terminal's input ends (0), on SIGTERM, SIGHUP or SIGINT (0), or on an error of its own (7). Its last log line says why, and how often the link's window filled and the most it had in flight.
@@ -718,7 +719,7 @@ Runs on the chat's machine, in the terminal the relay starts; nobody else needs 
 A PTY is not a clean pipe: core may inject a repaint (it starts with `\x18\x1b[!p`) after its machine link drops or when a viewer falls more than ~4 MiB behind; a line may be lost; someone may type into the terminal. So:
 
 - Every line is one JSON object in printable ASCII (`0x20`–`0x7e`) ended by `\n`, at most 512 KiB.
-- Handshake (no `s`): the bridge prints `{"t":"ready","v":1}`. The relay, once it sees it, sends `{"t":"sync","n":"<nonce>"}`; the bridge answers `{"t":"synced","n":"<nonce>"}`. Anything before SYNC (on the bridge) or before SYNCED (on the relay) is ignored: it is the terminal's, not the link's. `{"t":"nohost","v":1}` instead of READY: no host, refused.
+- Handshake (no `s`): the bridge prints `{"t":"ready","v":1}`. The relay, once it sees it, sends `{"t":"sync","n":"<nonce>"}`; the bridge answers `{"t":"synced","n":"<nonce>"}`. Anything before SYNC (on the bridge) or before SYNCED (on the relay) is ignored: it is the terminal's, not the link's. `{"t":"nohost","v":1}` instead of READY: no host (4004).
 - After SYNCED, every line carries `s`: 1, 2, 3… per direction.
   - Data: `{"s":N,"d":"<base64>"}`. A record (one JSONL line of the chat protocol, UTF-8, without its `\n`) goes in chunks of at most 192 KiB before base64; all but the last chunk carry `"c":1`. A record is at most 8 MiB.
   - Ack: `{"s":N,"t":"ack","n":<bytes>}`, the cumulative bytes of data lines received (each line with its `\n`). Sent every 64 KiB and at each record's end, and only while the receiver's consumer keeps up (the relay's WebSocket has at most 1 MiB waiting; the bridge's socket at most 4 MiB). One held back goes out with the next ping tick once the consumer catches up.

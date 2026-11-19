@@ -8,7 +8,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, existsSync } from "node:fs";
+import { chmodSync, writeFileSync, mkdtempSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startHost, idle, sleep, ROOT, HOST_ENTRY, HOST_NODE } from "./harness.ts";
@@ -212,7 +212,7 @@ test("relay: a 6 MiB record from the mod crosses to the host in one go, no resyn
   }
 });
 
-test("relay: a wrong token, a chat that doesn't exist or a hello without a chat is refused alike, and nothing starts on the machine", async (t) => {
+test("relay: a wrong token, a chat that does not exist, a malformed entry or a hello without a chat is refused alike, and nothing starts on the machine", async (t) => {
   if (skipped(t)) return;
   const h = await host();
   const r = await startRelay();
@@ -233,10 +233,16 @@ test("relay: a wrong token, a chat that doesn't exist or a hello without a chat 
     await noChat.opened();
     noChat.send({ t: "hello", v: 1, token: h.registry!.token, client: "mod" });
     await refused(noChat);
-    assert.deepEqual(reasons, ["refused", "refused", "refused"], "the reason says nothing of the chat or its path");
+    writeFileSync(join(shared, "state", "chats", "c-malformed.json"), "{ not json", { mode: 0o600 });
+    const malformed = new WsClient(r.port);
+    await malformed.opened();
+    malformed.send({ t: "hello", v: 1, token: h.registry!.token, client: "mod", chat: "c-malformed" });
+    await refused(malformed);
+    assert.deepEqual(reasons, ["refused", "refused", "refused", "refused"], "the reason says nothing of the chat or its path");
     const log = r.log();
     assert.match(log, /c-r\d+: a wrong token/);
     assert.match(log, /c-no-such-chat: no registry entry/);
+    assert.match(log, /c-malformed: a malformed registry entry/);
     assert.match(log, /a bad hello/);
     assert.doesNotMatch(log, /starting a bridge/, "no bridge for a refused client");
     assert.equal(bridges(h.chat).length + bridges("c-no-such-chat").length, 0);
@@ -245,7 +251,7 @@ test("relay: a wrong token, a chat that doesn't exist or a hello without a chat 
   }
 });
 
-test("relay: a chat whose host is gone is refused (4003) with no retry loop: exited, nothing starts; killed, the bridge reports no host", async (t) => {
+test("relay: a chat whose host is gone closes 4004 (no host, retry once a host serves it), not refused: exited, nothing starts; killed, the bridge reports no host", async (t) => {
   if (skipped(t)) return;
   const r = await startRelay();
   try {
@@ -254,7 +260,7 @@ test("relay: a chat whose host is gone is refused (4003) with no retry loop: exi
     await exited.stop();
     assert.equal(exited.registry!.pid, null);
     const a = await joinRelay(r.port, exited, token);
-    assert.equal(await closedCode(a), 4003);
+    assert.equal(await closedCode(a), 4004);
     assert.match(r.log(), /no host: the chat's host has exited/);
     assert.doesNotMatch(r.log(), /starting a bridge/);
 
@@ -264,13 +270,40 @@ test("relay: a chat whose host is gone is refused (4003) with no retry loop: exi
     await killed.exited;
     assert.ok(killed.registry!.pid, "a SIGKILLed host leaves its entry");
     const b = await joinRelay(r.port, killed, ktoken);
-    assert.equal(await closedCode(b), 4003);
+    assert.equal(await closedCode(b), 4004);
     assert.match(r.log(), /no host: the bridge found none/);
     assert.match(bridgeLog(killed.chat), /exit 4: no host serves the chat/);
     await until(() => bridges(killed.chat).length === 0, 10_000, "the bridge gone");
   } catch (e) {
     throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
   } finally {
+    await killRelay(r);
+  }
+});
+
+test("relay: a registry read that fails for another reason than a missing file closes 1011 (retry), not 4003; once readable the chat is served", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  const r = await startRelay();
+  const reg = join(shared, "state", "chats", `${h.chat}.json`);
+  const token = h.registry!.token;
+  try {
+    // Core reaches the machine, but the read fails there (EACCES: core's `io`).
+    chmodSync(reg, 0);
+    const ws = await joinRelay(r.port, h, token);
+    const reason = new Promise<string>((res) => ws.ws.once("close", (_c, why) => res(String(why))));
+    assert.equal(await closedCode(ws), 1011);
+    assert.equal(await reason, "setup failed");
+    assert.match(r.log(), /registry read failed: .*Permission denied/);
+    assert.doesNotMatch(r.log(), /starting a bridge/);
+    chmodSync(reg, 0o600);
+    const again = await joinRelay(r.port, h);
+    await welcomed(again);
+    again.ws.close();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    chmodSync(reg, 0o600);
     await killRelay(r);
   }
 });

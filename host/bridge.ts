@@ -2,8 +2,8 @@
 // (relay.ts), and joins that terminal's PTY to the host's Unix socket. Records cross the PTY in the
 // link protocol (relaylink.ts); the host sees an ordinary JSONL client.
 //
-// It connects to the host first: no host there, it prints NOHOST and exits (the relay refuses the
-// mod). Then READY, and SYNC must come within deadMs. It exits when the host socket closes, when
+// It connects to the host first: no host there, it prints NOHOST and exits (the relay closes the
+// mod 4004, no host). Then READY, and SYNC must come within deadMs. It exits when the host socket closes, when
 // the link breaks, when no line came for deadMs (the relay is gone), or when it is killed.
 import { execFileSync } from "node:child_process";
 import { writeSync } from "node:fs";
@@ -18,30 +18,11 @@ import { cappedLog } from "./logfile.ts";
 /** The host socket's records held for the link past this: stop reading the socket. */
 const HOLD = 4 << 20;
 const PRESYNC_MAX = 64 * 1024;
+const EXIT_DRAIN_MS = 2000;
 
 export function runBridge(opts: { chat: string; stateDir: string; times: LinkTimes }): void {
   const log = cappedLog(join(opts.stateDir, "chats", `${opts.chat}.bridge.log`), () => `[${process.pid}] `);
   let stats = "";
-  const exit = (code: number, why: string): never => {
-    log(`exit ${code}: ${why}${stats}`);
-    process.exit(code);
-  };
-  // Nothing but link lines may reach the PTY: a stray stderr write would break the link.
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    log(`stderr: ${String(chunk).trimEnd()}`);
-    return true;
-  }) as typeof process.stderr.write;
-  process.on("uncaughtException", (e) => exit(7, `uncaught: ${e?.stack ?? e}`));
-  process.on("unhandledRejection", (e) => exit(7, `unhandled rejection: ${(e as Error)?.stack ?? e}`));
-  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) process.on(sig, () => exit(0, sig));
-
-  // Raw: no echo, no CR added, no signal keys; Node's raw mode keeps ONLCR, stty doesn't.
-  try {
-    execFileSync("stty", ["raw", "-echo"], { stdio: ["inherit", "ignore", "pipe"] });
-  } catch (e) {
-    exit(2, `stty: ${e instanceof Error ? e.message : e}`);
-  }
-
   // stdout is the PTY, non-blocking: a write meeting EAGAIN (core not reading yet) waits and
   // retries, never spinning; the link window bounds what waits here.
   const pending: Buffer[] = [];
@@ -67,11 +48,45 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
       if (n < b.length) pending[0] = b.subarray(n);
       else pending.shift();
     }
+    drained?.();
   };
   const out = (s: string): void => {
     pending.push(Buffer.from(s, "latin1"));
     if (!waiting) flush();
   };
+
+  // Exiting waits for the PTY queue to drain (a NOHOST or a last record must reach the relay),
+  // at most EXIT_DRAIN_MS; the first exit decides the code.
+  let exiting = false;
+  let drained: (() => void) | null = null;
+  const exit = (code: number, why: string): never => {
+    if (exiting) return undefined as never;
+    exiting = true;
+    log(`exit ${code}: ${why}${stats}`);
+    if (!pending.length || code === 3) process.exit(code);
+    const cap = setTimeout(() => process.exit(code), EXIT_DRAIN_MS);
+    drained = () => {
+      if (pending.length) return;
+      clearTimeout(cap);
+      process.exit(code);
+    };
+    return undefined as never;
+  };
+  // Nothing but link lines may reach the PTY: a stray stderr write would break the link.
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    log(`stderr: ${String(chunk).trimEnd()}`);
+    return true;
+  }) as typeof process.stderr.write;
+  process.on("uncaughtException", (e) => exit(7, `uncaught: ${e?.stack ?? e}`));
+  process.on("unhandledRejection", (e) => exit(7, `unhandled rejection: ${(e as Error)?.stack ?? e}`));
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) process.on(sig, () => exit(0, sig));
+
+  // Raw: no echo, no CR added, no signal keys; Node's raw mode keeps ONLCR, stty doesn't.
+  try {
+    execFileSync("stty", ["raw", "-echo"], { stdio: ["inherit", "ignore", "pipe"] });
+  } catch (e) {
+    exit(2, `stty: ${e instanceof Error ? e.message : e}`);
+  }
 
   log(`bridge chat=${opts.chat}`);
   const entry = readRegistry(opts.stateDir, opts.chat);
@@ -84,14 +99,16 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
   const sock = connect(socketPath(opts.stateDir, opts.chat, pid));
   sock.pause();
   let link: Link | null = null;
-  let synced = false;
+  let connected = false;
   sock.on("error", (e) => {
-    if (!synced) out(NOHOST_LINE + "\n");
-    exit(synced ? 5 : 4, `host socket: ${e.message}`);
+    // Only a host that can't be reached is "no host"; a socket error once connected is not.
+    if (!connected) out(NOHOST_LINE + "\n");
+    exit(connected ? 5 : 4, `host socket: ${e.message}`);
   });
   sock.on("close", () => exit(0, "host socket closed"));
 
   sock.on("connect", () => {
+    connected = true;
     out(READY_LINE + "\n");
     const deadline = setTimeout(() => exit(8, `no sync in ${opts.times.deadMs} ms`), opts.times.deadMs);
     let pre = "";
@@ -110,7 +127,6 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
   });
 
   const start = (nonce: string, rest: Buffer): void => {
-    synced = true;
     const l = new Link(out, opts.times);
     link = l;
     let fills = 0;
