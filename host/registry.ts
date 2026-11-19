@@ -18,6 +18,8 @@ export type RegistryEntry = {
   token: string;
   cwd: string;
   sessionFile: string | null;
+  /** A continued TUI's agent home (serve --agent-home; "": none set). Absent: not a continued chat. A restore without the tab's props passes it again. */
+  agentHome?: string;
   terminal: string | null;
   startedAt: number;
   agentVersion: string | null;

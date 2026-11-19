@@ -176,7 +176,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     } else this.emit({ type: "permission_mode", mode: this.permissionMode });
     this.emitModel();
     if (this.effort) this.emit({ type: "thinking", level: this.effort });
-    const other = liveHolder(id, p.pid);
+    const other = liveHolder(this.file ?? id, p.pid);
     if (other) this.emit({ type: "notice", level: "warning", source: "host", text: `This session is also open in another Claude Code process (pid ${other.pid}${other.kind ? `, ${other.kind}` : ""}). Two writers on one session can lose turns.` });
     return { streaming: false, hasHistory: Boolean(fork) || (resume && hasMessages(this.file)) };
   }
@@ -580,10 +580,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     return { contextTokens: n(r.totalTokens), contextWindow: n(r.maxTokens), percent: n(r.percentage), cost: cost > 0 ? cost : null };
   }
 
-  /** Claude Code's own guard: its live-process registry (~/.claude/sessions/<pid>.json). */
+  /** Claude Code's own guard: its live-process registry (<home>/sessions/<pid>.json). */
   sessionHolder(session: string): { pid: number } | null {
-    const id = sessionIdOf(session);
-    return id ? liveHolder(id, this.proc?.pid) : null;
+    return sessionIdOf(session) ? liveHolder(session, this.proc?.pid) : null;
   }
 
   tuiCommand(session: string): string[] {

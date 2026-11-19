@@ -2,16 +2,16 @@
 // ($CLAUDE_CONFIG_DIR instead of ~/.claude), and the CLI's live-process registry
 // ~/.claude/sessions/<pid>.json.
 import { readdirSync, statSync, readFileSync, realpathSync, openSync, readSync, closeSync, existsSync } from "node:fs";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { join, basename, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { SessionInfo, SessionScope } from "../types.ts";
 import { jsonlFiles, subdirs } from "../../jsonl.ts";
+import { homeOf } from "../env.ts";
 
 type Rec = Record<string, any>;
 
 export function configDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  return homeOf(process.env.CLAUDE_CONFIG_DIR, "claude");
 }
 
 /** The CLI resolves the cwd (macOS /tmp → /private/tmp), then replaces every non-alphanumeric with '-'. */
@@ -126,22 +126,31 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Another live Claude Code process on this session, from the CLI's own registry. */
-export function liveHolder(sessionId: string, exceptPid?: number): { pid: number; kind?: string } | null {
-  const dir = join(configDir(), "sessions");
-  if (!existsSync(dir)) return null;
-  let names: string[] = [];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return null;
-  }
-  for (const n of names) {
-    if (!n.endsWith(".json")) continue;
+/**
+ * Another live Claude Code process on this session, from the CLI's own
+ * registry: the host's home's, and the home the session file is in
+ * (<home>/projects/<project>/<id>.jsonl: a TUI continued as a chat registers there).
+ */
+export function liveHolder(session: string, exceptPid?: number): { pid: number; kind?: string } | null {
+  const sessionId = sessionIdOf(session);
+  const own = dirname(dirname(session));
+  const homes = new Set([configDir(), ...(basename(own) === "projects" ? [dirname(own)] : [])]);
+  for (const home of homes) {
+    const dir = join(home, "sessions");
+    if (!existsSync(dir)) continue;
+    let names: string[] = [];
     try {
-      const r = JSON.parse(readFileSync(join(dir, n), "utf8"));
-      if (r?.sessionId === sessionId && typeof r.pid === "number" && r.pid !== exceptPid && pidAlive(r.pid)) return { pid: r.pid, kind: r.kind };
-    } catch {}
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      if (!n.endsWith(".json")) continue;
+      try {
+        const r = JSON.parse(readFileSync(join(dir, n), "utf8"));
+        if (r?.sessionId === sessionId && typeof r.pid === "number" && r.pid !== exceptPid && pidAlive(r.pid)) return { pid: r.pid, kind: r.kind };
+      } catch {}
+    }
   }
   return null;
 }

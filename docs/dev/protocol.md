@@ -440,10 +440,14 @@ handoff: { argv: string[]; terminal: string | null; since: number } | null;
   // set by `handoff` (argv = the TUI command, terminal = null until `handoff_started`), cleared on resume
 conflict: { chat: string | null; terminal: string | null; pid: number | null } | null;
   // chat/terminal/pid of the other chat's host (from its session lock);
-  // chat: null = an agent process outside any chat (Claude Code's ~/.claude/sessions registry, Codex "active writer"; pid null when Codex doesn't say)
+  // chat: null = an agent process outside any chat (Claude Code's `<home>/sessions` registry, of the host's home and the session's, Codex "active writer"; pid null when Codex doesn't say)
 queue: { steering: string[]; followUp: string[];
          steeringFrom?: (string | null)[]; followUpFrom?: (string | null)[] };
   // aligned with the texts: the `from` of an `hc send` report (e.g. "t7 review"), null = the user. Present only when some entry has a sender.
+agentHome: { variable: string; value: string } | null;
+  // a continued TUI's agent home (serve --agent-home, Claude Code and Codex only): CLAUDE_CONFIG_DIR / CODEX_HOME,
+  // value "" = none set. The mod runs /tui and /login in it (`/usr/bin/env VAR=value`, or `-u VAR`) and gives
+  // it to a new chat from this one. null = not a continued chat. The registry entry keeps the value (`agentHome`).
 ```
 `handoff` and `conflict` flush immediately (like `phase`).
 

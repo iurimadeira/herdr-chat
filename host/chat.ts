@@ -43,6 +43,8 @@ export type Phase = "starting" | "idle" | "working" | "compacting" | "handoff" |
 /** The session is in the agent's TUI: `argv` runs it, `terminal` is the TUI's terminal once the client reports it. */
 export type Handoff = { argv: string[]; terminal: string | null; since: number };
 /** Another live writer has the session: a chat's host (`chat`, `terminal`), or an agent process outside any chat (`chat: null`). */
+/** A continued TUI's agent home (serve --agent-home): the variable and its value ("": unset), for the agent's terminals (/tui, /login) and new chats from this one. */
+export type AgentHome = { variable: string; value: string };
 export type Conflict = { chat: string | null; terminal: string | null; pid: number | null };
 export type ExtensionDialog = {
   id: string; method: "select" | "confirm" | "input" | "editor"; title: string;
@@ -86,6 +88,8 @@ export type ChatState = {
   permissionMode: string | null;
   handoff: Handoff | null;
   conflict: Conflict | null;
+  /** null: not a continued chat (the agent's home is whatever the host's environment gives). */
+  agentHome: AgentHome | null;
   /** The branch of the folder (git.ts); null outside a repo. */
   git: GitState | null;
 };
@@ -122,6 +126,7 @@ export type ChatOptions = {
   session: string | null;
   adapter: ProviderAdapter;
   terminal: string | null;
+  agentHome?: AgentHome | null;
   /** Where images from tool results and user messages are saved (<stateDir>/images/<chat>). */
   imageDir?: string | null;
   /** The composer's pasted and dropped images (<stateDir>/attachments/<chat>). The folder outlives this host: main.ts removes it once the chat's pane is gone. */
@@ -225,7 +230,7 @@ export class Chat {
       model: null, thinking: null, plan: null, usage: null, queue: { steering: [], followUp: [] }, dialog: null, dialogsPending: 0,
       statuses: [], widgets: [], title: null, editorText: null, commands: [],
       provider: this.adapter.id, providerName: this.adapter.name, capabilities: structuredClone(this.adapter.capabilities), permissionMode: null,
-      handoff: null, conflict: null, git: null,
+      handoff: null, conflict: null, agentHome: opts.agentHome ?? null, git: null,
     };
     this.state.commands = this.menu();
     this.git = new GitWatch(opts.cwd, (git) => this.set({ git }), opts.log);

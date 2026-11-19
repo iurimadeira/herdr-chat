@@ -24,6 +24,8 @@ export type CodexHostOptions = {
   stallMs?: number;
   agent?: string;
   env?: Record<string, string>;
+  /** More serve flags (e.g. --agent-home). */
+  hostArgs?: string[];
 };
 
 export class CodexHost extends Host {
@@ -48,7 +50,7 @@ export class CodexHost extends Host {
 }
 
 export async function codexHost(o: CodexHostOptions): Promise<CodexHost> {
-  const h = new CodexHost({ name: o.name, provider: "codex", agent: o.agent ?? FAKE_CODEX, ...(o.dir ? { dir: o.dir } : {}), ...(o.cwd ? { cwd: o.cwd } : {}), ...(o.chat ? { chat: o.chat } : {}), ...(o.session ? { session: o.session } : {}) });
+  const h = new CodexHost({ name: o.name, provider: "codex", agent: o.agent ?? FAKE_CODEX, ...(o.dir ? { dir: o.dir } : {}), ...(o.cwd ? { cwd: o.cwd } : {}), ...(o.chat ? { chat: o.chat } : {}), ...(o.session ? { session: o.session } : {}), ...(o.hostArgs ? { hostArgs: o.hostArgs } : {}) });
   const fake = !o.agent || o.agent === FAKE_CODEX;
   const env: Record<string, string> = {
     // The fake's own home (CODEX_HOME also points the adapter's ~/.codex/prompts there); a real Codex keeps the user's.

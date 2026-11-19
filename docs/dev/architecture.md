@@ -119,11 +119,35 @@ asks the host which session it has open, `herdr-chat-host tui-session
   (`herdr-chat.session`); the model and thinking level are the session's last
   `model_change` and `thinking_level_change` entries.
 - **Claude Code:** its registry of live processes,
-  `~/.claude/sessions/<pid>.json` (`sessionId`, `cwd`).
+  `<home>/sessions/<pid>.json` (`sessionId`, `cwd`), then
+  `<home>/projects/*/<sessionId>.jsonl`.
 - **Codex:** the rollout file the TUI has open (`codex --no-daemon`), else
-  the newest rollout in its folder written since it started (a TUI on the
-  shared daemon leaves the file to the daemon); the model and effort are the
-  last `turn_context`'s.
+  the newest rollout in its folder under `<home>/sessions` written since it
+  started (a TUI on the shared daemon leaves the file to the daemon); the
+  model and effort are the last `turn_context`'s.
+
+`<home>` is the agent home the TUI's process uses: its `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME` (`/proc/<pid>/environ` on Linux, `ps -E` on macOS), else
+`~/.claude` / `~/.codex`; each process of the TUI's tree its own (a launcher
+and the agent it runs may differ). A process whose environment can't be read
+(gone, or another user's) gives no home, except the TUI's own process, which
+then has the default; never the host's own. So a TUI started under another
+home (an account router's `~/.claude-alt`) continues on its own session, not
+on the host's home's.
+
+The chat's agent inherits that home: `tui-session` returns it (`home`, null
+when the TUI had none set), the mod gives it to the host (`serve
+--agent-home=<home>`, empty for none; a pane prop, so restarts keep it), and
+the host sets or removes `CLAUDE_CONFIG_DIR` / `CODEX_HOME` for its agent. It
+overrides a home set in the configured `env` (settings.json); only a configured
+agent command (a launcher such as `acc` or `aco`) may still choose its own. The
+host records it in the registry entry (`agentHome`, "" for none), so a restored
+pane without its props keeps it, and in its state (`agentHome`): the mod runs
+`/tui` and `/login` in it (`/usr/bin/env VAR=<home>`, or `-u VAR`) and gives it
+to a new chat opened from this one (same agent, same account). Pi has no
+inherited home: serve ignores `--agent-home` for it.
+Claude Code's conflict guard reads the registry of the host's home and of the
+home the session file is in.
 
 Then:
 
