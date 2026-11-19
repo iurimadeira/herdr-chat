@@ -247,7 +247,7 @@ Two private hc sessions (A and B) linked with `hc machine add --via` (`hcrig.ts`
 |---|---|
 | The Unix socket is readable by others, or left behind after exit | `socket.test.ts`: mode 0600, welcome and snapshot, a send, a wrong token gets nothing, the file gone after exit |
 | A host removes another host's socket (a stale one's cleanup, or the old host's exit after a hand-off), or clears its registry entry | `socket.test.ts` "two hosts of one chat": per-pid paths; a dead host's socket and the legacy name swept, a regular file and another chat's socket kept; the new host's socket and entry survive the old host's exit and serve a client |
-| A remote host opens a TCP or WebSocket port | `socket.test.ts` "--socket-only": `port` and `wsPort` null, no listener in `ss -ltnp`; `relay.test.ts` "no TCP port" |
+| A remote host opens a TCP or WebSocket port | `socket.test.ts` "--socket-only": `port` and `wsPort` null, no listener by `lsof` (else `ss`; skipped explicitly when neither exists), with a local host's port as the control that the tool sees listeners; `relay.test.ts` "no TCP port" |
 | `--socket-only` under a long `--state-dir` (socket path over 103 bytes on macOS) exits 1 with only a bare `listen EINVAL` in the log; a local host silently has no socket | `socket.test.ts` "over the system's limit": exit 1, stderr names the path, its byte length and the limit |
 | An empty or missing registry token matches | `peer.test.ts` |
 | The `hc connect` child outlives a hello that never comes, or a core call never answers | `hccore.test.ts`: a fake `hc` that never answers; the open rejects and the child is dead; a call with a timeout rejects and the client stays usable |
@@ -272,6 +272,6 @@ Two private hc sessions (A and B) linked with `hc machine add --via` (`hcrig.ts`
 | The machine link drops and comes back at once | `relay.test.ts` "killed and back at once": no fixed outcome (core may carry the link over or repaint); what arrives is in order, and a resync's snapshot has every turn once |
 | Killing the relay kills the host or agent, or strands the bridge | `relay.test.ts` "killing the relay": the bridge exits within `--dead-ms`, the same agent, a new relay serves the chat |
 | A connection that ends while its bridge starts leaks the bridge | not covered end to end (the window is core's `terminal.run`); the relay kills a bridge whose address comes back after the end, and the bridge exits 8 when no SYNC comes within `--dead-ms` (`relay.test.ts` "bridge: no SYNC within --dead-ms": a bridge run on machine B with nobody answering logs exit 8 and goes; the host lives) |
-| A port opens on the chat's machine, or the relay listens beyond loopback | `relay.test.ts` "no TCP port": `ss -ltnp` per pid; the host's socket is `<chat>.<pid>.sock` |
+| A port opens on the chat's machine, or the relay listens beyond loopback | `relay.test.ts` "no TCP port": `tcpListening` per pid (`lsof`, else `ss`; skipped explicitly when neither exists), the relay's own 127.0.0.1 port the control; the host's socket is `<chat>.<pid>.sock` |
 | The relay's queued-bytes count drifts (it went negative before) | `relaylink.test.ts` "at most a window": `queued()` is 0 after everything is sent |
 | The relay or bridge log grows without end | `logfile.test.ts`: past the cap the file moves to `.1` once |

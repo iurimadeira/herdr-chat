@@ -6,12 +6,12 @@
 import { test, before, after } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { chmodSync, writeFileSync, mkdtempSync, readFileSync, realpathSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startHost, idle, sleep, ROOT, HOST_ENTRY, HOST_NODE } from "./harness.ts";
+import { startHost, idle, sleep, ROOT, HOST_ENTRY, HOST_NODE, tcpListening } from "./harness.ts";
 import type { Host } from "./harness.ts";
 import { WsClient, withoutPings, withoutSeq } from "./wsclient.ts";
 import type { Rec } from "./wsclient.ts";
@@ -560,12 +560,6 @@ const alive = (pid: number): boolean => {
   }
 };
 
-/** TCP sockets listening for `pid`: local addresses. */
-function listening(pid: number): string[] {
-  const out = execFileSync("ss", ["-ltnpH"], { encoding: "utf8" });
-  return out.split("\n").filter((l) => l.includes(`pid=${pid},`)).map((l) => l.trim().split(/\s+/)[3]!);
-}
-
 test("relay: killing the relay leaves the host and its agent running; the bridge goes, a new relay serves the chat", async (t) => {
   if (skipped(t)) return;
   const h = await host();
@@ -608,9 +602,15 @@ test("relay: no TCP port opens on the chat's machine (the host serves only its s
   try {
     await welcomed(ws);
     const bridge = bridgePid(h.chat);
-    assert.deepEqual(listening(bridge), [], "the bridge listens on nothing");
-    assert.deepEqual(listening(h.proc.pid!), [], "the host listens on no TCP port");
-    assert.deepEqual(listening(r.proc.pid!), [`127.0.0.1:${r.port}`], "the relay listens on loopback only");
+    // The relay's own port is the control: a tool that sees nothing fails here, not passes below.
+    const relayPorts = tcpListening(r.proc.pid!);
+    if (relayPorts === null) {
+      t.skip("neither lsof nor ss here: the listener checks are skipped");
+    } else {
+      assert.deepEqual(relayPorts, [`127.0.0.1:${r.port}`], "the relay listens on loopback only");
+      assert.deepEqual(tcpListening(bridge), [], "the bridge listens on nothing");
+      assert.deepEqual(tcpListening(h.proc.pid!), [], "the host listens on no TCP port");
+    }
     const reg = JSON.parse(readFileSync(join(shared, "state", "chats", `${h.chat}.json`), "utf8"));
     assert.equal(reg.port, null);
     assert.equal(reg.wsPort, null);

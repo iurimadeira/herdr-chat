@@ -3,10 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { ChatClient } from "../../host/client.ts";
 import { dirname, join } from "node:path";
-import { startHost, idle, sleep, Host, TMP } from "./harness.ts";
+import { startHost, idle, sleep, Host, TMP, tcpListening } from "./harness.ts";
 import { LineFramer } from "../../host/framing.ts";
 
 type Rec = Record<string, any>;
@@ -70,13 +70,6 @@ async function staleSocket(path: string): Promise<void> {
   await new Promise<void>((r) => p.on("exit", () => r()));
 }
 
-const listening = (pid: number): string[] => {
-  try {
-    return execFileSync("ss", ["-ltnpH"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(`pid=${pid},`));
-  } catch {
-    return [];
-  }
-};
 
 test("unix socket: a new host removes only dead hosts' sockets, never a live one's or a non-socket, and stopping one host leaves the other's", async () => {
   const dir = mkdtempSync(join(TMP, "unix-two-"));
@@ -117,19 +110,28 @@ test("unix socket: a new host removes only dead hosts' sockets, never a live one
   }
 });
 
-test("unix socket: serve --socket-only listens on no port at all; a client reaches it by the socket", async () => {
+test("unix socket: serve --socket-only listens on no port at all; a client reaches it by the socket", async (t) => {
   const h = await startHost({ name: "unix-only", speed: 5, socketOnly: true });
+  // The control: a local host's port shows, so an empty list below means no listener.
+  const local = await startHost({ name: "unix-control", speed: 5 });
   try {
     await h.client.waitFor(idle, 10_000, "idle over the socket");
     const reg = h.registry!;
     assert.equal(reg.port, null);
     assert.equal(reg.wsPort, null);
     assert.ok(statSync(reg.socket!).isSocket());
-    assert.deepEqual(listening(reg.pid!), [], "no TCP listener");
+    const control = tcpListening(local.proc.pid!);
+    if (control === null) {
+      t.skip("neither lsof nor ss here: the no-listener check is skipped");
+    } else {
+      assert.ok(control.includes(`127.0.0.1:${local.registry!.port}`), `the control's port shows: ${control}`);
+      assert.deepEqual(tcpListening(reg.pid!), [], "no TCP listener");
+    }
     const c = await ChatClient.fromRegistry(h.stateDir, h.chat, "test");
     c.close();
   } finally {
     await h.stop();
+    await local.stop();
   }
 });
 
