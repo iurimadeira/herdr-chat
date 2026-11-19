@@ -92,6 +92,7 @@ the test that has to catch it; "not covered" rows are known gaps
 | The lock not released, or released when another host holds it | `handoff.test.ts` "forks and exits" (released for the TUI); `conflict.test.ts` (the holder keeps it; taken once it's released); `ops.test.ts` "/new"; `lifecycle.test.ts` "Pi crashes mid-run" |
 | The hand-off never ends (the mod's watch is lost) | `handoff.test.ts`: the host resumes when the TUI's terminal finishes, is killed, with no mod connected, and after a mod reload |
 | The chat resumes the old session after a fork or /resume in the TUI | `handoff.test.ts` "forks and exits" |
+| Continue as chat finds a session in the host's agent home instead of the TUI's (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` set for the TUI only, or for the host only) | `tui-session.test.ts`: the TUI's own home, its launcher's child's, the defaults when the TUI has none, an unreadable environment; the chat resumes that session with its agent in the TUI's home (`--agent-home`, sub-agents too), and the guard sees a holder registered in that home |
 | Resuming while the TUI still writes the session | `handoff.test.ts` "terminal is killed": waits for the TUI's pid |
 | Two chats write one session | `conflict.test.ts`: phase `conflict`, `take_over`; Claude's registry; `codex-lifecycle.test.ts` active writer |
 

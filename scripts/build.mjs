@@ -8,7 +8,7 @@
 //   herdr-chat-<version>/          the tree, laid out like the repo:
 //     host/main.js                 host/main.ts and its dependencies (highlight.js,
 //                                  beautiful-mermaid) in one file, for Node >= NODE_MIN
-//     install/*.js                 install/*.ts, each one file; install/app.sh
+//     install/*.js                 install/*.ts, each one file; install/app.sh, host.sh
 //     bin/ herdr-app/mods/ extension/ install.sh LICENSE README.md CHANGELOG.md
 //     package.json                 name, version, engines (node >= NODE_MIN), herdr
 //   herdr-chat-<version>.tar.gz    that tree
@@ -49,7 +49,7 @@ for (const f of readdirSync(join(ROOT, "install")).filter((f) => f.endsWith(".ts
 const shipped = (src) => !/(^|\/)(\.[^/]*|gpui-kit\.d\.ts|herdr\.d\.ts|jsconfig\.json)$/.test(src);
 for (const p of ["bin", "herdr-app/mods", "extension"]) cpSync(join(ROOT, p), join(tree, p), { recursive: true, filter: shipped });
 for (const f of ["install.sh", "LICENSE", "README.md", "CHANGELOG.md"]) if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(tree, f));
-cpSync(join(ROOT, "install", "app.sh"), join(tree, "install", "app.sh"));
+for (const f of ["app.sh", "host.sh"]) cpSync(join(ROOT, "install", f), join(tree, "install", f));
 const release = {
   name: pkg.name, version, private: true, type: "module", description: pkg.description, license: pkg.license,
   repository: pkg.repository, homepage: pkg.homepage, engines: { node: `>=${NODE_MIN}` }, herdr: pkg.herdr,

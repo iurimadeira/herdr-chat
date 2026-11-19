@@ -6,9 +6,10 @@ import { homedir } from "node:os";
 import { typedText } from "../../skill.ts";
 import { parsePiSkill, fileArgsAsTyped } from "./skill.ts";
 import type { SessionInfo, SessionScope } from "../types.ts";
+import { homeOf } from "../env.ts";
 
 export function agentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+  return homeOf(process.env.PI_CODING_AGENT_DIR, "pi");
 }
 
 /**

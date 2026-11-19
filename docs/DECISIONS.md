@@ -18,3 +18,16 @@ Append-only. Rules live in `CONTEXT.md`; this log records why.
 - **Account routing by the configured agent command (`acc`/`aco`).**
   Rejected: herdr-chat picking an agent home itself, which would bypass the
   router's failover and folder pins.
+
+## 2026-11-18 — Continuing a TUI inherits the session's agent home (#9)
+
+- **Continuing a TUI inherits the session's agent home; herdr-chat still never
+  chooses a home.** Continue as chat finds the session in the agent home the
+  TUI's process uses (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, else the default),
+  and the chat's agent runs in that same home (`serve --agent-home`). This
+  keeps the choice made by whatever launched the TUI (e.g. the router), so it
+  is consistent with "Account routing by the configured agent command": the
+  home is never picked by herdr-chat, and a configured `acc`/`aco` command
+  still has the last word. Rejected: resuming in the host's own home (the
+  session, its registry and its login are in another home, so the resume
+  fails or runs under another account); herdr-chat routing the account itself.

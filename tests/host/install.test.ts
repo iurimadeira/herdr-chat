@@ -350,6 +350,89 @@ test("install.sh: --no-subagents writes no templates and no notes; a plain insta
   assert.ok(!existsSync(join(tpl, "pi-chat.md")));
 });
 
+// --- install.sh --host-only: a machine without the Herdr app (a remote space's machine) ------
+// A scratch home with hc and two agents as stubs, no herdr-app anywhere on PATH; every
+// home and config dir points into it.
+function hostOnlyHome() {
+  const d = mkdtempSync(join(tmpdir(), "herdr-chat-hostonly-"));
+  const h = join(d, "home");
+  mkdirSync(join(h, ".claude"), { recursive: true });
+  mkdirSync(join(h, ".codex"), { recursive: true });
+  writeFileSync(join(h, ".codex", "AGENTS.md"), "codex rules\n");
+  mkdirSync(join(d, "pi"));
+  mkdirSync(join(d, "work"));
+  const bin = join(d, "bin");
+  mkdirSync(bin);
+  for (const a of ["hc", "claude", "codex"]) writeFileSync(join(bin, a), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const nodeDir = join(d, "node");
+  mkdirSync(nodeDir);
+  execFileSync("ln", ["-s", process.execPath, join(nodeDir, "node")]);
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(HERDR_|HC_|XDG_)/.test(k)));
+  const env = { ...clean, PATH: `${bin}:${nodeDir}:/usr/bin:/bin`, HOME: h, HERDR_APP_HOME: join(d, "app"), XDG_CONFIG_HOME: join(d, "config"), XDG_DATA_HOME: join(d, "data"), PI_CODING_AGENT_DIR: join(d, "pi"), CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" };
+  return { d, h, app: join(d, "app"), env, tpl: join(d, "config", "herdr-core", "templates") };
+}
+
+test("install.sh --host-only: the host command, printed; nothing in an app home, no layout, keys, templates or notes; --uninstall leaves the templates too", () => {
+  const { d, h, app, env, tpl } = hostOnlyHome();
+  const sh = (...a: string[]) => {
+    const r = spawnSync(join(ROOT, "install.sh"), a, { encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return r.stdout;
+  };
+  // Templates already there (lab's come from chezmoi): one marked as ours, one someone else's.
+  mkdirSync(tpl, { recursive: true });
+  const ours = "---\ncommand: '/old/bin/herdr-chat-subagent' --provider claude\ninstalled-by: herdr-chat\n---\n";
+  writeFileSync(join(tpl, "claude-chat.md"), ours);
+  writeFileSync(join(tpl, "codex-chat.md"), "mine\n");
+  const untouched = () => {
+    assert.equal(readFileSync(join(tpl, "claude-chat.md"), "utf8"), ours);
+    assert.equal(readFileSync(join(tpl, "codex-chat.md"), "utf8"), "mine\n");
+    assert.ok(!existsSync(join(tpl, "pi-chat.md")));
+  };
+
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const out = sh("--host-only");
+  const host = join(ROOT, "bin", "herdr-chat-host");
+  assert.match(out, new RegExp(`^herdr-chat: host command: ${esc(host)}$`, "m"), "prints the host command");
+  assert.match(out, /machines\.<name>\.host/, "says where it goes on the Mac");
+  const built = spawnSync(host, ["build"], { encoding: "utf8", env });
+  assert.equal(built.status, 0, built.stderr);
+  assert.ok(JSON.parse(built.stdout).build, "the host command runs");
+  untouched();
+  assert.ok(!existsSync(app) && !existsSync(join(h, ".config", "herdr-app")), "no app home written");
+  assert.equal(readFileSync(join(h, ".codex", "AGENTS.md"), "utf8"), "codex rules\n", "no sub-agents note");
+  assert.ok(!existsSync(join(h, ".claude", "CLAUDE.md")) && !existsSync(join(d, "pi", "AGENTS.md")) && !existsSync(join(d, "pi", "extensions")), "no notes, no Pi extension");
+
+  sh("--host-only", "--uninstall");
+  untouched();
+  assert.ok(!existsSync(app));
+});
+
+test("install.sh: a release installed for the other target (--app or --host-only) is refused on install and uninstall, with nothing changed", () => {
+  const { d, env } = hostOnlyHome();
+  // A release folder whose installers only leave a trace if they run.
+  const base = join(d, "data", "herdr-chat");
+  mkdirSync(join(base, "0.5.0", "install"), { recursive: true });
+  for (const t of ["app", "host"]) writeFileSync(join(base, "0.5.0", "install", `${t}.sh`), `touch '${join(d, "ran")}'\n`);
+  execFileSync("ln", ["-s", "0.5.0", join(base, "current")]);
+  // The one-liner's shape: the script on stdin, from a folder that isn't a clone.
+  const oneliner = (...a: string[]) => spawnSync("sh", ["-s", "--", ...a], { cwd: join(d, "work"), input: readFileSync(join(ROOT, "install.sh")), encoding: "utf8", env });
+  const refused = (installed: string, ...a: string[]) => {
+    const r = oneliner(...a);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`the release in .* is installed ${installed}, not --(app|host-only); nothing changed`));
+    assert.ok(existsSync(join(base, "current", "install", "app.sh")) && !existsSync(join(d, "ran")), "the release stays, nothing ran");
+  };
+
+  // A release from before --host-only (no target file): an app install.
+  refused("--app", "--host-only", "--uninstall");
+  refused("--app", "--host-only", "--from", join(d, "nothing"));
+  writeFileSync(join(base, "target"), "host\n");
+  refused("--host-only", "--uninstall");
+  refused("--host-only", "--app", "--from", join(d, "nothing"));
+});
+
+
 // --- slots another plugin holds: install/layout.ts ----------------------------------------
 // A layout where another plugin (here gitview-agents, gitview's convention: what it replaced in
 // props.replaces) holds the agents block, and another mod is the right-click menu.

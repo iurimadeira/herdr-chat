@@ -79,6 +79,13 @@ window to "add the mod at github.com/ChmaraX/herdr-chat".
 - **Options:** `--no-subagents` (no sub-agent templates or notes),
   `--no-layout` (leave your layout alone). The full list of what install
   changes is in [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
+- **Host only:** on a machine without the Herdr app (one a remote space runs
+  on), `--host-only` installs just the host. It writes nothing in an app
+  home, no layout, keys, sub-agent templates or agent notes, and doesn't put
+  the host command on PATH: it prints the host command's path, which you set
+  as that machine's `machines.<name>.host` in herdr-chat's settings on the
+  Mac. In a clone, `./install.sh --host-only`. A release folder serves one
+  target: `--host-only` over an app release (or the reverse) is refused.
 
 ## Quick start
 
@@ -133,6 +140,12 @@ found), `args` (added to the agent's), `env`, and `tui` (the program `/tui`
 runs). A new chat picks up a change. `updates.check: false` stops the daily
 look for a new release (a release install only); `updates.feed` points it at
 another URL with GitHub's release JSON.
+
+A chat continued from a TUI (Continue as chat) keeps that TUI's agent home
+(`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, or none set): it overrides a home set in
+`env` here, for the chat, its `/tui` and `/login`, and new chats opened from
+it. Only a configured launcher command (such as `acc` or `aco`) may still
+choose its own.
 
 ## Limitations
 
