@@ -205,3 +205,101 @@ test("relay: a burst over 4 MiB while the mod holds its acks arrives intact (the
     r.proc.kill("SIGKILL");
   }
 });
+
+/** Joins until welcomed: the machine link may still be coming back after a drop. */
+async function rejoin(port: number, h: Host): Promise<WsClient> {
+  const t0 = Date.now();
+  for (;;) {
+    const ws = await joinRelay(port, h);
+    try {
+      await welcomed(ws, 10_000);
+      return ws;
+    } catch (e) {
+      ws.ws.close();
+      if (Date.now() - t0 > 60_000) throw e;
+      await sleep(500);
+    }
+  }
+}
+
+/** Big turns sent by the TCP client, each waited for. */
+function turns(h: Host): (i: number) => Promise<void> {
+  return async (i) => {
+    const res = await h.client.req("send", { text: `turn ${i} ` + "é🙂".repeat(1 << 17) });
+    assert.equal(res.disposition, "started");
+    await h.client.waitFor((c) => idle(c) && c.items.filter((x) => x.kind === "assistant").length === i + 1, 20_000, `turn ${i}`);
+  };
+}
+
+function everyTurnOnce(snap: Rec, h: Host, n: number): void {
+  assert.deepEqual(snap.items, h.client.items);
+  const users = (snap.items as Rec[]).filter((x) => x.kind === "user").map((x) => String(x.text).split(" ").slice(0, 2).join(" "));
+  assert.deepEqual(users, Array.from({ length: n }, (_, i) => `turn ${i}`), "every turn once, in order");
+}
+
+test("relay: the machine link held down mid-stream closes the mod with 4001; a reconnect's snapshot has every turn once", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  const ws = await joinRelay(r.port, h);
+  try {
+    await welcomed(ws);
+    const turn = turns(h);
+    // Records wait in the link's window and queue when the link goes.
+    ws.holding = true;
+    for (let i = 0; i < 3; i++) await turn(i);
+    const closed = closedCode(ws);
+    rig!.drop(true);
+    assert.equal(await closed, 4001);
+    assert.match(r.log(), /c-r\d+: (link: |core:|bridge ended)/, "the relay saw the link break");
+    // The chat goes on without the mod.
+    for (let i = 3; i < 5; i++) await turn(i);
+    assert.equal(h.proc.exitCode, null, "the host lives");
+    rig!.up();
+
+    const again = await rejoin(r.port, h);
+    everyTurnOnce(again.records.find((x) => x.t === "snapshot")!, h, 5);
+    await sameTurn(h, again, "after the resync 🙂");
+    again.ws.close();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    rig!.up();
+    ws.ws.close();
+    r.proc.kill("SIGKILL");
+  }
+});
+
+test("relay: the machine link killed and back at once mid-stream: the records arrive intact, or the mod resyncs", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  const ws = await joinRelay(r.port, h);
+  try {
+    await welcomed(ws);
+    const turn = turns(h);
+    const from = ws.records.length;
+    const tcpFrom = h.client.records.length;
+    ws.holding = true;
+    for (let i = 0; i < 3; i++) await turn(i);
+    rig!.drop();
+    for (let i = 3; i < 5; i++) await turn(i);
+    ws.resume();
+    const want = withoutPings(h.client.records.slice(tcpFrom)).filter((x) => x.t !== "res");
+    const got = (): Rec[] => withoutPings(ws.records.slice(from));
+    await ws.until(() => ws.closed || got().length >= want.length, 30_000, "the records or a resync");
+    if (!ws.closed) {
+      // Core carried the link over without a gap.
+      assert.deepEqual(got().map(withoutSeq), want.map(withoutSeq));
+      await sameTurn(h, ws, "after the drop 🙂");
+    } else {
+      assert.ok(got().every((x, i) => JSON.stringify(withoutSeq(x)) === JSON.stringify(withoutSeq(want[i]!))), "what came before the resync came in order");
+      const again = await rejoin(r.port, h);
+      everyTurnOnce(again.records.find((x) => x.t === "snapshot")!, h, 5);
+      again.ws.close();
+    }
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    ws.ws.close();
+    r.proc.kill("SIGKILL");
+  }
+});

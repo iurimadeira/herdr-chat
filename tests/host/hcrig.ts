@@ -51,8 +51,9 @@ export class Rig {
 
   start(): this {
     const via = join(this.dir, "via.sh");
-    // Each link's shell records its pid: a test kills it to drop the machine link.
-    writeFileSync(via, `#!/bin/sh\necho $$ >> '${this.viaPids}'\nexec sh -c "$1"\n`);
+    // Each link's shell records its pid: a test kills it to drop the machine link, and keeps it
+    // down while the `down` file exists.
+    writeFileSync(via, `#!/bin/sh\n[ -e '${join(this.dir, "down")}' ] && exit 1\necho $$ >> '${this.viaPids}'\nexec sh -c "$1"\n`);
     chmodSync(via, 0o755);
     this.hc(["server", "start"], this.a);
     this.hc(["server", "start"], this.b);
@@ -72,6 +73,22 @@ export class Rig {
     });
   }
 
+  /** Drops the machine link; with `hold`, it stays down until up(). */
+  drop(hold = false): void {
+    if (hold) writeFileSync(join(this.dir, "down"), "");
+    for (const p of this.linkPids()) {
+      // The shell's child is B's `herdr-core connect`: the link lives in it.
+      spawnSync("pkill", ["-KILL", "-P", String(p)], { stdio: "ignore" });
+      try {
+        process.kill(p, "SIGKILL");
+      } catch {}
+    }
+  }
+
+  up(): void {
+    rmSync(join(this.dir, "down"), { force: true });
+  }
+
   /** B's terminals carrying `label` (k=v). */
   terminals(label: string): { address: string; state: string; pid?: number }[] {
     const out = this.hc(["ls", "--json", "--all", "--label", label], this.b);
@@ -81,11 +98,7 @@ export class Rig {
 
   stop(): void {
     for (const s of [this.a, this.b]) spawnSync(HC, ["server", "stop"], { env: this.env(s), timeout: 30_000, stdio: "ignore" });
-    for (const p of this.linkPids()) {
-      try {
-        process.kill(p, "SIGKILL");
-      } catch {}
-    }
+    this.drop();
     rmSync(this.dir, { recursive: true, force: true });
   }
 }
