@@ -23,21 +23,23 @@ export class ChatClient {
   private listeners = new Set<() => void>();
   seqErrors: string[] = [];
 
-  static async connect(port: number, token: string, kind = "test", timeoutMs = 5000): Promise<ChatClient> {
+  /** `to` is a loopback TCP port or a Unix socket path (a socket-only host). */
+  static async connect(to: number | string, token: string, kind = "test", timeoutMs = 5000): Promise<ChatClient> {
     const c = new ChatClient();
-    await c.open(port, token, kind, timeoutMs);
+    await c.open(to, token, kind, timeoutMs);
     return c;
   }
 
   static async fromRegistry(stateDir: string, chat: string, kind = "cli"): Promise<ChatClient> {
     const reg: RegistryEntry | null = readRegistry(stateDir, chat);
-    if (!reg || !reg.port) throw new Error(`No running host for chat ${chat} in ${stateDir}`);
-    return ChatClient.connect(reg.port, reg.token, kind);
+    const to = reg?.port ?? reg?.socket;
+    if (!reg || !to) throw new Error(`No running host for chat ${chat} in ${stateDir}`);
+    return ChatClient.connect(to, reg.token, kind);
   }
 
-  private open(port: number, token: string, kind: string, timeoutMs: number): Promise<void> {
+  private open(to: number | string, token: string, kind: string, timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const s = connect(port, "127.0.0.1");
+      const s = typeof to === "string" ? connect(to) : connect(to, "127.0.0.1");
       this.socket = s;
       const timer = setTimeout(() => {
         s.destroy();

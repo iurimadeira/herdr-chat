@@ -1,6 +1,6 @@
 // The chat registry (<stateDir>/chats/<chat>.json) and the session lock
 // (<sessionFile>.herdr-chat.lock).
-import { mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync, chmodSync, readdirSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type RegistryEntry = {
@@ -13,6 +13,8 @@ export type RegistryEntry = {
   port: number | null;
   /** WebSocket, for the Herdr mod (protocol.md "Transport"). Absent before 0.4: such a host speaks only JSONL. */
   wsPort?: number | null;
+  /** JSONL over a Unix socket (mode 0600, `<stateDir>/chats/<chat>.<pid>.sock`): what a remote chat's bridge connects to. Absent in entries written before protocol v3.8; null while no host runs. */
+  socket?: string | null;
   token: string;
   cwd: string;
   sessionFile: string | null;
@@ -28,6 +30,39 @@ export type RegistryEntry = {
 
 export function registryPath(stateDir: string, chat: string): string {
   return join(stateDir, "chats", `${chat}.json`);
+}
+
+/**
+ * The Unix socket of the chat's host with that pid, beside its registry entry. Named by pid: a
+ * host's exit unlinks its own path, never a newer host's of the same chat.
+ */
+export function socketPath(stateDir: string, chat: string, pid: number): string {
+  return join(stateDir, "chats", `${chat}.${pid}.sock`);
+}
+
+/**
+ * Removes the sockets of this chat's hosts that died without removing theirs (SIGKILL): only
+ * sockets (lstat, so never a link's target), only of a dead pid, never another chat's. Also the
+ * single `<chat>.sock` an older host used.
+ */
+export function sweepSockets(stateDir: string, chat: string): void {
+  const dir = join(stateDir, "chats");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(`${chat}.`) || !name.endsWith(".sock")) continue;
+    const mid = name.slice(chat.length + 1, -".sock".length);
+    if (mid !== "" && !/^\d+$/.test(mid)) continue;
+    if (mid !== "" && pidAlive(Number(mid))) continue;
+    const path = join(dir, name);
+    try {
+      if (lstatSync(path).isSocket()) unlinkSync(path);
+    } catch {}
+  }
 }
 
 export function atomicWrite(path: string, text: string, mode = 0o600): void {
