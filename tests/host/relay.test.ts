@@ -18,6 +18,7 @@ import type { Rec } from "./wsclient.ts";
 import { Rig, HC, hcUnusable } from "./hcrig.ts";
 import { LINK_WINDOW } from "../../host/relaylink.ts";
 import { CoreClient } from "../../host/hccore.ts";
+import type { Stream } from "../../host/hccore.ts";
 
 const PING_MS = 300;
 const DEAD_MS = 2500;
@@ -654,6 +655,70 @@ test("relay: a killed host gives 4004 even when the bridge finds no host before 
   } catch (e) {
     throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}\nbridge log:\n${bridgeLog(killed.chat)}`);
   } finally {
+    await killRelay(r);
+  }
+});
+
+test("core client: streams closed here or ended by core leave nothing behind, however many come and go", async (t) => {
+  if (skipped(t)) return;
+  const c = await CoreClient.open(HC, rig!.env(rig!.a));
+  const run = async (): Promise<string> => {
+    const r = await c.call("terminal.run", {
+      on: rig!.machine, argv: ["sh", "-c", "while :; do echo tick; sleep 0.02; done"],
+      no_parent: true, no_notify: true, rm: true, labels: { "herdr-chat.test": "leak" },
+    }, 10_000);
+    return String(r.address).includes("/") ? String(r.address) : `${rig!.machine}/${r.address}`;
+  };
+  const data = (s: Stream): Promise<void> => new Promise((res) => (s.onData = () => res()));
+  try {
+    const t1 = await run();
+    for (let i = 0; i < 15; i++) {
+      const s = await c.attach(t1);
+      await data(s);
+      s.close();
+    }
+    for (let i = 0; i < 5; i++) {
+      const addr = await run();
+      const s = await c.attach(addr);
+      await data(s);
+      const gone = new Promise<void>((res) => (s.onClose = () => res()));
+      // With rm, core may answer that the terminal is already removed.
+      await c.call("terminal.kill", { terminal: addr }, 10_000).catch(() => {});
+      await gone;
+    }
+    await sleep(500);
+    assert.equal(c.channels, 0, "no stream or held frame left");
+  } finally {
+    c.end();
+    for (const x of rig!.terminals("herdr-chat.test=leak")) if (x.state === "live") try { rig!.hc(["kill", x.address], rig!.b); } catch {}
+  }
+});
+
+test("relay: 8 setups at once, the ninth busy (1013); an attach core never answers frees its slot at the setup deadline (1011)", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  const { hc, stallFile } = slowHc("stall-attach", { stall: ["terminal.attach"] });
+  writeFileSync(stallFile, "");
+  const r = await startRelay({ hc, env: { HERDR_CHAT_RELAY_SETUP_MS: "1500" } });
+  const open: WsClient[] = [];
+  try {
+    for (let i = 0; i < 8; i++) open.push(await joinRelay(r.port, h));
+    await until(() => (r.log().match(/starting a bridge/g) ?? []).length === 8, 10_000, "8 bridges starting");
+    const ninth = await joinRelay(r.port, h);
+    assert.equal(await closedCode(ninth), 1013);
+    assert.deepEqual(await Promise.all(open.map(closedCode)), Array(8).fill(1011));
+    // Every slot is free again: the next connection sets up (and stalls) instead of being busy.
+    const again = await joinRelay(r.port, h);
+    assert.equal(await closedCode(again), 1011);
+    await until(() => bridges(h.chat).length === 0, 15_000, "the stalled bridges killed");
+    rmSync(stallFile);
+    const ws = await joinRelay(r.port, h);
+    await welcomed(ws);
+    ws.ws.close();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    for (const w of open) w.ws.close();
     await killRelay(r);
   }
 });

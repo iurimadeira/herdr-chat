@@ -199,13 +199,24 @@ export class Relay {
     let bridge: string | null = null;
     let link: Link | null = null;
     let tag = "?";
+    // The connection's setup slot, held from its hello until it syncs or ends, whichever comes first:
+    // a core call that never answers can't keep it.
+    let slot = false;
+    const freeSlot = (): void => {
+      if (slot) this.setups--;
+      slot = false;
+    };
+    // The bridge's stream: ending the connection closes it (a sync waiting on it gives up).
+    let attached: Stream | null = null;
     const end = (code: number, why: string): void => {
       if (ended) return;
       ended = true;
+      freeSlot();
       this.sessions.delete(stop);
       o.log(`${tag}: ${why}`);
       clearTimeout(helloTimer);
       link?.stop();
+      attached?.close(why);
       if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(code, REASON[code] ?? "");
       release();
     };
@@ -238,11 +249,8 @@ export class Relay {
         clearTimeout(helloTimer);
         if (this.setups >= MAX_SETUPS) return end(CLOSE_BUSY, `busy: ${this.setups} connections setting up`);
         this.setups++;
-        void setup(text)
-          .catch((e) => end(e instanceof NoHost ? CLOSE_NO_HOST : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`))
-          .finally(() => {
-            this.setups--;
-          });
+        slot = true;
+        void setup(text).catch((e) => end(e instanceof NoHost ? CLOSE_NO_HOST : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`));
         return;
       }
       if (!link) {
@@ -305,10 +313,15 @@ export class Relay {
         bridge = String(run.address).includes("/") ? String(run.address) : `${o.machine}/${run.address}`;
         // Ended while core started it: kill it now that its address is known.
         if (ended) return release();
-        const stream = await c.attach(bridge);
-        if (ended) return release();
+        const stream = await c.attach(bridge, { timeoutMs: CALL_TIMEOUT_MS });
+        if (ended) {
+          stream.close("the connection ended");
+          return release();
+        }
+        attached = stream;
         const rest = await this.sync(stream);
         if (ended) return;
+        freeSlot();
         const l = new Link((line) => stream.write(Buffer.from(line, "latin1")), o.times);
         link = l;
         l.onBroken = (why) => end(CLOSE_RESYNC, `link: ${why}`);
