@@ -674,8 +674,8 @@ herdr-chat-host relay --machine <m> [--state-dir D] [--host CMD] [--node PATH]
 - `--hc`: the `hc` binary (default `$HERDR_CHAT_HC`, else `hc`). The relay reaches core with `hc connect`, so it uses whatever session `hc` uses (`HC_SESSION`).
 - `--ping-ms` (5000) and `--dead-ms` (20000): the link's ping interval and silence limit.
 - `HERDR_CHAT_RELAY_SETUP_MS` (20000): how long a connection's setup may take.
-- One relay per machine: it takes `relays/<m>.lock` (created exclusively, holding its pid) before it listens. While that pid lives, a second relay exits 1 (`already serves machine`). A lock whose pid is dead (a SIGKILLed relay) is taken over.
-- SIGTERM, SIGINT and SIGHUP close every connection (1001), kill their bridges (each kill waits at most 10 s for core), and, if the lock is still its own, rewrite the registry with `pid: null, wsPort: null` and remove the lock. An error in one connection is logged; it never ends the relay.
+- One relay per machine: before it listens it takes the machine's lock, `relays/<m>.locks/<n>`: numbered files, the highest current, each `{"pid": …, "start": "<ps lstart>"}` (0600). While the current holder's pid lives and `ps` gives it the same start time, a second relay exits 1 (`already serves machine`). Otherwise (a SIGKILLed relay, or its pid now another process's) it claims `n+1` by an exclusive hard link of a complete file, then removes the lower numbers. Relays started at once over a dead holder race for the same `n+1`: one wins, the others see it live. A relay never removes the current file.
+- SIGTERM, SIGINT and SIGHUP close every connection (1001), kill their bridges (each kill waits at most 10 s for core), and, if the lock is still its own, rewrite the registry with `pid: null, wsPort: null` and claim the next number with `pid: null`, which frees the machine at once. An error in one connection is logged; it never ends the relay.
 
 The relay registry:
 

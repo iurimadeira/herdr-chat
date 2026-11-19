@@ -348,7 +348,10 @@ test("relay: one relay per machine: a second refuses while the first lives; one 
   r2.proc.kill("SIGTERM");
   assert.equal(await r2.exited, 0);
   assert.equal(JSON.parse(readFileSync(regPath, "utf8")).pid, null, "a stopped relay clears its entry");
-  assert.ok(!existsSync(join(macState(), "relays", `${rig!.machine}.lock`)));
+  // And frees the machine at once: the next relay takes it.
+  const r3 = await startRelay();
+  r3.proc.kill("SIGTERM");
+  assert.equal(await r3.exited, 0);
 });
 
 test("relay: a burst over 4 MiB while the mod holds its acks arrives intact; the bridge never has more than the window in flight", async (t) => {

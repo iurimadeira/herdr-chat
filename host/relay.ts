@@ -8,7 +8,7 @@
 // attached → READY, SYNC/SYNCED → the hello forwarded, then records both ways. Anything wrong on the
 // link closes the WebSocket (code 4001): the mod reconnects as after any drop and starts again from
 // a snapshot, through a new bridge. One core client serves every connection.
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
@@ -16,7 +16,8 @@ import type { WebSocket } from "ws";
 import { MAX_RECORD_BYTES } from "./framing.ts";
 import { CoreClient, CoreError } from "./hccore.ts";
 import type { Stream } from "./hccore.ts";
-import { atomicWrite, pidAlive } from "./registry.ts";
+import { atomicWrite } from "./registry.ts";
+import { MachineLock } from "./relaylock.ts";
 import { tokenMatches, wsPeer, WS_ACK } from "./peer.ts";
 import { Link, LINK_WINDOW, NOHOST_LINE, READY_LINE, syncLine, syncedLine } from "./relaylink.ts";
 import type { LinkTimes } from "./relaylink.ts";
@@ -72,10 +73,6 @@ export function relayPath(stateDir: string, machine: string): string {
   return join(stateDir, "relays", `${machine}.json`);
 }
 
-export function relayLockPath(stateDir: string, machine: string): string {
-  return join(stateDir, "relays", `${machine}.lock`);
-}
-
 /** The bridge printed NOHOST: no host serves the chat. */
 class NoHost extends Error {}
 
@@ -88,15 +85,16 @@ export class Relay {
   private core: CoreClient | null = null;
   private opening: Promise<CoreClient> | null = null;
   private kills = new Set<Promise<unknown>>();
-  private locked = false;
+  private lock: MachineLock;
 
   constructor(o: RelayOptions) {
     this.o = o;
+    this.lock = new MachineLock(o.stateDir, o.machine);
   }
 
   /** Takes the machine's lock (one relay per machine; a dead holder's lock is taken over), then listens. */
   async listen(): Promise<number> {
-    this.lock();
+    this.lock.take();
     const wss = new WebSocketServer({
       host: "127.0.0.1", port: 0, maxPayload: MAX_RECORD_BYTES, perMessageDeflate: false,
       verifyClient: (info: { origin?: string }) => !info.origin,
@@ -113,28 +111,6 @@ export class Relay {
     return this.wsPort;
   }
 
-  private lock(): void {
-    const path = relayLockPath(this.o.stateDir, this.o.machine);
-    mkdirSync(join(this.o.stateDir, "relays"), { recursive: true, mode: 0o700 });
-    for (let tries = 0; ; tries++) {
-      try {
-        const fd = openSync(path, "wx", 0o600);
-        writeSync(fd, `${process.pid}\n`);
-        closeSync(fd);
-        this.locked = true;
-        return;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST" || tries > 2) throw e;
-      }
-      const holder = Number(readFileSync(path, "utf8").trim()) || 0;
-      if (holder && holder !== process.pid && pidAlive(holder)) throw new Error(`relay pid ${holder} already serves machine ${this.o.machine}`);
-      // Its holder died (SIGKILL): the lock and the entry are stale.
-      try {
-        unlinkSync(path);
-      } catch {}
-    }
-  }
-
   save(pid: number | null, wsPort: number | null): void {
     const b = hostBuild();
     const entry: RelayEntry = { v: 1, machine: this.o.machine, pid, wsPort, startedAt: Math.round(performance.timeOrigin), version: b.version, build: b.build };
@@ -148,21 +124,9 @@ export class Relay {
     // The bridges' kills go out before the core link does.
     await Promise.allSettled([...this.kills]);
     this.core?.end();
-    if (this.locked) {
-      // Only what is ours: another relay may hold the machine by now.
-      const path = relayLockPath(this.o.stateDir, this.o.machine);
-      let holder = 0;
-      try {
-        holder = Number(readFileSync(path, "utf8").trim()) || 0;
-      } catch {}
-      if (holder === process.pid) {
-        this.save(null, null);
-        try {
-          unlinkSync(path);
-        } catch {}
-      }
-      this.locked = false;
-    }
+    // Only what is ours: another relay may hold the machine by now.
+    if (this.lock.held()) this.save(null, null);
+    this.lock.release();
   }
 
   /** The relay's one core client, opened on first use and again after it closes. */
