@@ -20,6 +20,7 @@ import { PaneWatch } from "./panewatch.ts";
 import { AGENT_HOMES } from "./providers/env.ts";
 import { hostBuild } from "./build.ts";
 import { Relay, relayPath } from "./relay.ts";
+import { AlreadyServes, RELAY_ALREADY_SERVES } from "./relaylock.ts";
 import { runBridge } from "./bridge.ts";
 import { cappedLog } from "./logfile.ts";
 import { DEFAULT_LINK_TIMES } from "./relaylink.ts";
@@ -266,7 +267,11 @@ async function relay(a: Args): Promise<void> {
   process.on("SIGHUP", stop);
   const started = r.listen();
   listening = started.catch(() => {});
-  const port = await started.catch((e) => die(`relay: ${e instanceof Error ? e.message : e}`));
+  const port = await started.catch((e) => {
+    if (!(e instanceof AlreadyServes)) die(`relay: ${e instanceof Error ? e.message : e}`);
+    process.stderr.write(`herdr-chat-host: relay: ${e.message}\n`);
+    process.exit(RELAY_ALREADY_SERVES);
+  });
   log(`relay machine=${machine} ws=127.0.0.1:${port} pid=${process.pid} registry=${relayPath(stateDir, machine)}`);
 }
 

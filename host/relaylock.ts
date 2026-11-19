@@ -45,6 +45,14 @@ export function psStart(pid: number): string | null {
   }
 }
 
+/**
+ * A relay's exit when another relay already serves its machine: the one code the mod reads as
+ * "the relay is up", so it reads relays/<m>.json (Node's own crash is 1, a bad argument 2).
+ */
+export const RELAY_ALREADY_SERVES = 3;
+
+export class AlreadyServes extends Error {}
+
 export class MachineLock {
   readonly dir: string;
   private machine: string;
@@ -73,7 +81,7 @@ export class MachineLock {
         if (h.pid && pidAlive(h.pid)) {
           // A start time that can't be told (none recorded, or none read now) counts as the same process.
           const now = h.start ? procStart(h.pid) : null;
-          if (!h.start || !now || now === h.start) throw new Error(`relay pid ${h.pid} already serves machine ${this.machine}`);
+          if (!h.start || !now || now === h.start) throw new AlreadyServes(`relay pid ${h.pid} already serves machine ${this.machine}`);
         }
       }
       if (this.claim(top + 1, { pid: process.pid, start: procStart(process.pid) })) return;

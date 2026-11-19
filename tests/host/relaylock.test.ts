@@ -7,7 +7,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TMP, HOST_ENTRY, HOST_NODE, sleep } from "./harness.ts";
-import { psStart } from "../../host/relaylock.ts";
+import { psStart, RELAY_ALREADY_SERVES } from "../../host/relaylock.ts";
 
 const dirs: string[] = [];
 const procs: ChildProcess[] = [];
@@ -69,7 +69,10 @@ test("relay lock: many relays started at once over a SIGKILLed holder: exactly o
     await sleep(500);
     const live = rs.filter((r) => r.proc.exitCode === null);
     assert.equal(live.length, 1, `round ${round}: ${live.length} relays serve machine m\n${rs.map((r) => r.out()).join("\n")}`);
-    for (const r of rs.filter((x) => x !== live[0])) assert.match(r.out(), /already serves machine m/);
+    for (const r of rs.filter((x) => x !== live[0])) {
+      assert.match(r.out(), /already serves machine m/);
+      assert.equal(r.proc.exitCode, RELAY_ALREADY_SERVES);
+    }
     holder = live[0]!;
     assert.equal(entry(dir)?.pid, holder.proc.pid, `round ${round}: the entry names the one that serves`);
   }
@@ -173,7 +176,7 @@ test("relay lock: a live relay's lock is honoured, whatever else is in the direc
   mkdirSync(join(dir, "relays", "m.locks"), { recursive: true });
   writeFileSync(join(dir, "relays", "m.locks", "junk"), "x");
   const second = relay(dir);
-  assert.notEqual(await second.exited, 0);
+  assert.equal(await second.exited, RELAY_ALREADY_SERVES, "exits with the code the mod reads as \"already up\"");
   assert.match(second.out(), /already serves machine m/);
   r1.proc.kill("SIGTERM");
   assert.equal(await r1.exited, 0);

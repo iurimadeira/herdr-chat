@@ -17,6 +17,7 @@ import { WsClient, withoutPings, withoutSeq } from "./wsclient.ts";
 import type { Rec } from "./wsclient.ts";
 import { Rig, HC, hcUnusable } from "./hcrig.ts";
 import { LINK_WINDOW } from "../../host/relaylink.ts";
+import { RELAY_ALREADY_SERVES } from "../../host/relaylock.ts";
 import { CoreClient } from "../../host/hccore.ts";
 import type { Stream } from "../../host/hccore.ts";
 
@@ -341,7 +342,7 @@ test("relay: one relay per machine: a second refuses while the first lives; one 
   const regPath = join(macState(), "relays", `${rig!.machine}.json`);
   const r1 = await startRelay();
   const second = spawnRelay();
-  assert.notEqual(await second.exited, 0, "the second relay exits");
+  assert.equal(await second.exited, RELAY_ALREADY_SERVES, "the second relay exits, saying the machine is served");
   assert.match(second.out(), /already serves machine/);
   assert.equal(JSON.parse(readFileSync(regPath, "utf8")).pid, r1.proc.pid, "the first keeps the entry");
   await killRelay(r1);
