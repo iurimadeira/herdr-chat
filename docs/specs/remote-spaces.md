@@ -85,8 +85,10 @@ Starting and connecting
   handshake on each attach, with everything before SYNCED discarded; input
   is sent as DATA.
 - An unexpected control byte, a bad frame, a repaint or a link drop forces a
-  resync: the relay reattaches, and each resync is a fresh host session that
-  recovers by snapshot, as reconnect does today.
+  resync: the relay closes the mod's WebSocket (code 4001) and the mod
+  reconnects through the relay, so each resync is a fresh host session that
+  recovers by snapshot, as reconnect does today. One recovery path: every
+  drop is a reconnect plus snapshot.
 - Local chats are unchanged: the host listens on `127.0.0.1`, the mod
   connects directly with the token in `hello`, and no relay is involved.
 - Streaming, steering, follow-ups, stop, model, effort and mode, dialogs and
