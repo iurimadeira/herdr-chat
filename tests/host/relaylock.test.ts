@@ -7,6 +7,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TMP, HOST_ENTRY, HOST_NODE, sleep } from "./harness.ts";
+import { psStart } from "../../host/relaylock.ts";
 
 const dirs: string[] = [];
 const procs: ChildProcess[] = [];
@@ -98,6 +99,38 @@ test("relay lock: a stopped relay frees the machine at once; a holder whose pid 
   assert.equal(await r3.exited, 0);
 });
 
+/** Whether a lock file names this pid: the relay has taken the machine (it may not have listened yet). */
+function holds(dir: string, pid: number): boolean {
+  try {
+    const locks = join(dir, "relays", "m.locks");
+    return readdirSync(locks).some((n) => /^\d+$/.test(n) && readFileSync(join(locks, n), "utf8").includes(`"pid":${pid},`));
+  } catch {
+    return false;
+  }
+}
+
+test("relay lock: a SIGTERM from the moment a relay holds the machine stops it cleanly and frees the machine", async () => {
+  const dir = stateDir();
+  for (let round = 0; round < 12; round++) {
+    const r = relay(dir);
+    // Polled without a timer, to land in the start's window between the lock and the listen's end.
+    const t0 = Date.now();
+    while (!holds(dir, r.proc.pid!)) {
+      if (r.proc.exitCode !== null || Date.now() - t0 > 10_000) throw new Error(`round ${round}: relay did not take the machine: ${r.out()}`);
+      await new Promise((res) => setImmediate(res));
+    }
+    // Rounds alternate between at once and as the entry appears.
+    if (round % 2) while (entry(dir)?.pid !== r.proc.pid && r.proc.exitCode === null) await new Promise((res) => setImmediate(res));
+    r.proc.kill("SIGTERM");
+    assert.equal(await r.exited, 0, `round ${round}: a SIGTERM during start kills the relay outright\n${r.out()}`);
+    assert.equal(entry(dir)?.pid ?? null, null, `round ${round}: the entry is cleared`);
+  }
+  const last = relay(dir);
+  await serving(dir, last);
+  last.proc.kill("SIGTERM");
+  assert.equal(await last.exited, 0);
+});
+
 test("relay lock: a live relay holds the machine against 40 challengers over several seconds", async () => {
   const dir = stateDir();
   const r1 = relay(dir);
@@ -116,6 +149,21 @@ test("relay lock: a live relay holds the machine against 40 challengers over sev
   assert.equal(r1.proc.exitCode, null);
   r1.proc.kill("SIGTERM");
   assert.equal(await r1.exited, 0);
+});
+
+test("relay lock: ps's start time (macOS's) is the same whatever the time zone of the reader", () => {
+  const was = process.env.TZ;
+  try {
+    process.env.TZ = "America/Sao_Paulo";
+    const a = psStart(process.pid);
+    process.env.TZ = "Asia/Tokyo";
+    const b = psStart(process.pid);
+    assert.ok(a, "ps gives a start time");
+    assert.equal(a, b);
+  } finally {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  }
 });
 
 test("relay lock: a live relay's lock is honoured, whatever else is in the directory", async () => {

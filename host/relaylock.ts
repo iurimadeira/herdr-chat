@@ -30,9 +30,14 @@ function procStart(pid: number): string | null {
       return null;
     }
   }
+  return psStart(pid);
+}
+
+/** `ps`'s lstart for a pid, in UTC (a reader's own zone would make a live holder look new); null when `ps` can't tell. */
+export function psStart(pid: number): string | null {
   try {
     const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC0" }, stdio: ["ignore", "pipe", "ignore"],
     });
     return out.trim() || null;
   } catch {

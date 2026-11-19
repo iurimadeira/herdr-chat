@@ -15,6 +15,8 @@ its own terminal): each call is a JSON line `{terminal, labels}` in
 
 Stands between the relay and the real `hc` (`relay.test.ts` `slowHc`). It
 passes every command to the real hc, but for `hc connect` it can delay every
-byte core sends by `SLOW_HC_DELAY_MS`, and hold back the API methods listed in
-`SLOW_HC_STALL` (core never answers them) while the file `SLOW_HC_STALL_FILE`
-exists. The header of the script lists the variables.
+byte core sends by `SLOW_HC_DELAY_MS`, and drop the calls to the API methods
+listed in `SLOW_HC_STALL` while the file `SLOW_HC_STALL_FILE` exists: they
+never reach core, so core never answers them, even after the file is removed
+(calls made after that pass). The header of the script lists the variables.
+A core that answers late is faked in `hccore.test.ts` instead.

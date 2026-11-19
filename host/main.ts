@@ -255,15 +255,19 @@ async function relay(a: Args): Promise<void> {
     hc: a.flags.get("hc")?.[0] ?? process.env.HERDR_CHAT_HC ?? "hc",
     times: linkTimes(a),
   });
-  const port = await r.listen().catch((e) => die(`relay: ${e instanceof Error ? e.message : e}`));
-  log(`relay machine=${machine} ws=127.0.0.1:${port} pid=${process.pid} registry=${relayPath(stateDir, machine)}`);
+  // Armed before the lock is taken: a stop during the start still clears the entry and frees the machine.
+  let listening: Promise<unknown> = Promise.resolve();
   const stop = (): void => {
     log("shutting down");
-    void r.close().finally(() => process.exit(0));
+    void listening.then(() => r.close()).finally(() => process.exit(0));
   };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   process.on("SIGHUP", stop);
+  const started = r.listen();
+  listening = started.catch(() => {});
+  const port = await started.catch((e) => die(`relay: ${e instanceof Error ? e.message : e}`));
+  log(`relay machine=${machine} ws=127.0.0.1:${port} pid=${process.pid} registry=${relayPath(stateDir, machine)}`);
 }
 
 async function withClient<T>(a: Args, fn: (c: ChatClient) => Promise<T>): Promise<T> {

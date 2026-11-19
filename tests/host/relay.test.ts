@@ -170,10 +170,12 @@ async function sameTurn(h: Host, ws: WsClient, text: string): Promise<void> {
   assert.ok(prompt?.message === text, `the prompt reached the agent byte for byte (${prompt?.message?.length} of ${text.length} chars)`);
 }
 
-function closedCode(ws: WsClient): Promise<number> {
-  return new Promise((resolve) => {
+/** The close code; rejects when the socket is still open after `ms`, so a regression fails, not hangs. */
+function closedCode(ws: WsClient, ms = 40_000): Promise<number> {
+  return new Promise((resolve, reject) => {
     if (ws.closed) return resolve(-1);
-    ws.ws.once("close", (code) => resolve(code));
+    const t = setTimeout(() => reject(new Error(`not closed in ${ms} ms`)), ms);
+    ws.ws.once("close", (code) => (clearTimeout(t), resolve(code)));
   });
 }
 
@@ -624,14 +626,15 @@ test("relay: no TCP port opens on the chat's machine (the host serves only its s
 test("relay: over a slow link (setup over 5 s, past the host's hello timeout) the chat still connects and carries a turn", async (t) => {
   if (skipped(t)) return;
   const h = await host();
-  // Every byte from core 1.5 s late: the registry read, the bridge's start, its attach, READY and SYNCED each wait.
-  const { hc } = slowHc("slow-link", { delayMs: 1500 });
-  const r = await startRelay({ hc, deadMs: 10_000 });
+  // Every byte from core 2 s late: the registry read, the bridge's start, its attach, READY and SYNCED
+  // each wait, so the setup runs well past the host's 5 s hello timeout from the bridge's start.
+  const { hc } = slowHc("slow-link", { delayMs: 2000 });
+  const r = await startRelay({ hc, deadMs: 15_000 });
   const t0 = Date.now();
   const ws = await joinRelay(r.port, h);
   try {
-    await welcomed(ws, 30_000);
-    assert.ok(Date.now() - t0 > 5000, `the setup took ${Date.now() - t0} ms`);
+    await welcomed(ws, 40_000);
+    assert.ok(Date.now() - t0 > 7000, `the setup took ${Date.now() - t0} ms`);
     await sameTurn(h, ws, "over a slow link");
   } catch (e) {
     throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}\nbridge log:\n${bridgeLog(h.chat)}`);
@@ -709,7 +712,7 @@ test("relay: 8 setups at once, the ninth busy (1013); an attach core never answe
     await until(() => (r.log().match(/starting a bridge/g) ?? []).length === 8, 10_000, "8 bridges starting");
     const ninth = await joinRelay(r.port, h);
     assert.equal(await closedCode(ninth), 1013);
-    assert.deepEqual(await Promise.all(open.map(closedCode)), Array(8).fill(1011));
+    assert.deepEqual(await Promise.all(open.map((w) => closedCode(w))), Array(8).fill(1011));
     // Every slot is free again: the next connection sets up (and stalls) instead of being busy.
     const again = await joinRelay(r.port, h);
     assert.equal(await closedCode(again), 1011);
@@ -741,6 +744,31 @@ test("relay: over 1 MiB from the mod before its link is up closes 4003, and its 
     assert.equal(await code, 4003);
     assert.match(r.log(), /bytes before the link was up/);
     await until(() => bridges(h.chat).length === 0, 15_000, "its bridge killed");
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    rmSync(stallFile, { force: true });
+    await killRelay(r);
+  }
+});
+
+test("relay: over 1 MiB from the mod before its token is checked closes 4003, and nothing starts on the machine", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  // The registry read never answers: the token is never checked, so everything after the hello is held.
+  const { hc, stallFile } = slowHc("early-bytes-preauth", { stall: ["file.read"] });
+  writeFileSync(stallFile, "");
+  const r = await startRelay({ hc });
+  try {
+    const t0 = Date.now();
+    const ws = await joinRelay(r.port, h);
+    const code = closedCode(ws);
+    const chunk = JSON.stringify({ t: "req", id: 1, op: "send", text: "x".repeat(300 * 1024) });
+    for (let i = 0; i < 4; i++) ws.ws.send(chunk);
+    assert.equal(await code, 4003);
+    assert.ok(Date.now() - t0 < 8000, "at the bytes, not at the read's timeout");
+    assert.match(r.log(), /bytes before the link was up/);
+    assert.equal(bridges(h.chat).length, 0, "nothing started on the machine");
   } catch (e) {
     throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
   } finally {

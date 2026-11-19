@@ -17,6 +17,10 @@ export class CoreError extends Error {
 
 export const KIND = { DATA: 0, CREDIT: 1, CLOSE: 2 } as const;
 const MAX_FRAME = 1 << 20;
+/** Bytes held, over all channels, for attaches whose answers haven't come; more are dropped. */
+const EARLY_MAX = 256 << 10;
+/** Channels this client closed or saw closed, whose late frames are dropped; the newest are kept. */
+const GONE_KEEP = 1024;
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -75,7 +79,9 @@ export class CoreClient {
   private streams = new Map<number, Stream>();
   /** Frames for a channel an attach's answer hasn't named yet; kept only while an attach is pending. */
   private early = new Map<number, { kind: number; p: Buffer }[]>();
+  private earlyHeld = 0;
   private attaching = 0;
+  private gone = new Set<number>();
 
   private proc: ChildProcessWithoutNullStreams;
   private constructor(proc: ChildProcessWithoutNullStreams) {
@@ -127,13 +133,13 @@ export class CoreClient {
   }
 
   /**
-   * With `timeoutMs`, rejects when core doesn't answer in time; a channel core names after that is
-   * closed when its answer comes.
+   * With `timeoutMs`, rejects when core doesn't answer in time; a channel core names in the `lateMs`
+   * after that is closed when its answer comes, and an answer later still is forgotten.
    */
-  async attach(terminal: string, { cols = 200, rows = 50, timeoutMs }: { cols?: number; rows?: number; timeoutMs?: number } = {}): Promise<Stream> {
+  async attach(terminal: string, { cols = 200, rows = 50, timeoutMs, lateMs = 60_000 }: { cols?: number; rows?: number; timeoutMs?: number; lateMs?: number } = {}): Promise<Stream> {
     this.attaching++;
     let late = false;
-    const answer = this.call("terminal.attach", { terminal, cols, rows, history: 0 });
+    const answer = this.call("terminal.attach", { terminal, cols, rows, history: 0 }, timeoutMs === undefined ? undefined : timeoutMs + lateMs);
     let timer: NodeJS.Timeout | undefined;
     try {
       const r = await (timeoutMs === undefined
@@ -147,17 +153,27 @@ export class CoreClient {
               }, timeoutMs);
             }),
           ]));
+      // Core named it again: a new channel now (its frames before this answer were dropped).
+      this.gone.delete(r.channel);
       const s = new Stream(this, r.channel);
       this.streams.set(r.channel, s);
       for (const f of this.early.get(r.channel) ?? []) s.frameIn(f.kind, f.p);
-      this.early.delete(r.channel);
+      this.dropEarly(r.channel);
       return s;
     } finally {
       clearTimeout(timer);
       this.attaching--;
-      if (!this.attaching) this.early.clear();
+      if (!this.attaching) {
+        this.early.clear();
+        this.earlyHeld = 0;
+      }
       // Given up on: the channel core names later is nobody's.
-      if (late) answer.then((r) => this.frame(r.channel, KIND.CLOSE, Buffer.alloc(0)), () => {});
+      if (late) {
+        answer.then((r) => {
+          this.markGone(r.channel);
+          this.frame(r.channel, KIND.CLOSE, Buffer.alloc(0));
+        }, () => {});
+      }
     }
   }
 
@@ -166,9 +182,32 @@ export class CoreClient {
     return this.streams.size + this.early.size;
   }
 
+  /** Calls waiting for core's answer. */
+  get calls(): number {
+    return this.pending.size;
+  }
+
+  /** Bytes held for pending attaches. */
+  get earlyBytes(): number {
+    return this.earlyHeld;
+  }
+
   /** @internal */
   forget(s: Stream): void {
     if (this.streams.get(s.channel) === s) this.streams.delete(s.channel);
+    this.markGone(s.channel);
+  }
+
+  private markGone(ch: number): void {
+    this.dropEarly(ch);
+    this.gone.delete(ch);
+    this.gone.add(ch);
+    if (this.gone.size > GONE_KEEP) this.gone.delete(this.gone.values().next().value!);
+  }
+
+  private dropEarly(ch: number): void {
+    for (const f of this.early.get(ch) ?? []) this.earlyHeld -= f.p.length;
+    this.early.delete(ch);
   }
 
   end(): void {
@@ -235,8 +274,12 @@ export class CoreClient {
       }
       const s = this.streams.get(ch);
       if (s) s.frameIn(kind, p);
-      // A frame may come before its attach's answer; any other is a closed stream's late one.
-      else if (this.attaching) this.early.set(ch, [...(this.early.get(ch) ?? []), { kind, p }]);
+      // A frame may come before its attach's answer. A closed stream's late one is dropped, and so
+      // is any past the bound: the bridge repeats what it says until it is answered.
+      else if (this.attaching && !this.gone.has(ch) && this.earlyHeld + p.length <= EARLY_MAX) {
+        this.early.set(ch, [...(this.early.get(ch) ?? []), { kind, p }]);
+        this.earlyHeld += p.length;
+      }
     }
   }
 }
