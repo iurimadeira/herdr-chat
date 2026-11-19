@@ -8,7 +8,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { chmodSync, writeFileSync, mkdtempSync, readFileSync, realpathSync, existsSync } from "node:fs";
+import { chmodSync, writeFileSync, mkdtempSync, readFileSync, realpathSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startHost, idle, sleep, ROOT, HOST_ENTRY, HOST_NODE } from "./harness.ts";
@@ -45,6 +45,7 @@ after(async () => {
   for (const r of relays) r.kill("SIGKILL");
   for (const h of hosts) await h.stop();
   rig?.stop();
+  if (shared) rmSync(shared, { recursive: true, force: true });
 });
 
 /** Skips the test (at run time: `before` decides) when hc can't run here. */
@@ -63,20 +64,28 @@ async function host(): Promise<Host> {
 }
 
 const macState = (): string => join(rig!.dir, "mac");
-const relayLog = (): string => {
-  const p = join(macState(), "relays", `${rig!.machine}.log`);
+const relayLog = (machine = rig!.machine): string => {
+  const p = join(macState(), "relays", `${machine}.log`);
   return existsSync(p) ? readFileSync(p, "utf8") : "";
 };
 
 type Relay = { proc: ChildProcess; port: number; log: () => string; exited: Promise<number | null> };
 
-function spawnRelay(): { proc: ChildProcess; out: () => string; exited: Promise<number | null> } {
+type RelayOpts = {
+  /** The hc the relay runs (slowHc's, to slow or stall core's path). */
+  hc?: string;
+  machine?: string;
+  deadMs?: number;
+  env?: NodeJS.ProcessEnv;
+};
+
+function spawnRelay(opts: RelayOpts = {}): { proc: ChildProcess; out: () => string; exited: Promise<number | null> } {
   const r = rig!;
   const proc = spawn(HOST_NODE, [
-    HOST_ENTRY, "relay", "--machine", r.machine, "--state-dir", macState(),
+    HOST_ENTRY, "relay", "--machine", opts.machine ?? r.machine, "--state-dir", macState(),
     "--host", join(ROOT, "bin", "herdr-chat-host"), "--node", HOST_NODE, "--remote-state-dir", "state",
-    "--hc", HC, "--ping-ms", String(PING_MS), "--dead-ms", String(DEAD_MS),
-  ], { env: r.env(r.a), stdio: ["ignore", "pipe", "pipe"] });
+    "--hc", opts.hc ?? HC, "--ping-ms", String(PING_MS), "--dead-ms", String(opts.deadMs ?? DEAD_MS),
+  ], { env: { ...r.env(r.a), ...opts.env }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   proc.stdout!.on("data", (d) => (out += d));
   proc.stderr!.on("data", (d) => (out += d));
@@ -86,21 +95,37 @@ function spawnRelay(): { proc: ChildProcess; out: () => string; exited: Promise<
 }
 
 /** Starts a relay for machine B; its registry gives the port. */
-async function startRelay(): Promise<Relay> {
-  const { proc, out, exited } = spawnRelay();
-  const regPath = join(macState(), "relays", `${rig!.machine}.json`);
+async function startRelay(opts: RelayOpts = {}): Promise<Relay> {
+  const { proc, out, exited } = spawnRelay(opts);
+  const regPath = join(macState(), "relays", `${opts.machine ?? rig!.machine}.json`);
   const t0 = Date.now();
   for (;;) {
     try {
       const e = JSON.parse(readFileSync(regPath, "utf8"));
       if (e.pid === proc.pid && e.wsPort) {
         const mine = `[${proc.pid}]`;
-        return { proc, port: e.wsPort, exited, log: () => relayLog().split("\n").filter((l) => l.includes(mine)).join("\n") };
+        return { proc, port: e.wsPort, exited, log: () => relayLog(opts.machine).split("\n").filter((l) => l.includes(mine)).join("\n") };
       }
     } catch {}
     if (proc.exitCode !== null || Date.now() - t0 > 10_000) throw new Error(`relay did not start: ${out()}`);
     await sleep(20);
   }
+}
+
+/**
+ * An hc for the relay whose `connect` is slow or stalls (tests/fake-hc/slow-connect.mjs): every byte
+ * from core `delayMs` late; the `stall` methods never answered while the returned `stallFile` exists.
+ */
+function slowHc(name: string, o: { delayMs?: number; stall?: string[] }): { hc: string; stallFile: string } {
+  const hc = join(shared, `${name}-hc`);
+  const stallFile = join(shared, `${name}-stall`);
+  const env = [
+    `SLOW_HC_REAL='${HC}'`, `SLOW_HC_DELAY_MS='${o.delayMs ?? 0}'`,
+    `SLOW_HC_STALL='${(o.stall ?? []).join(",")}'`, `SLOW_HC_STALL_FILE='${stallFile}'`,
+  ];
+  writeFileSync(hc, `#!/bin/sh\nexec env ${env.join(" ")} '${HOST_NODE}' '${join(ROOT, "tests", "fake-hc", "slow-connect.mjs")}' "$@"\n`);
+  chmodSync(hc, 0o755);
+  return { hc, stallFile };
 }
 
 /** SIGKILL, and wait until it is gone: the next relay takes its lock over. */
@@ -588,6 +613,47 @@ test("relay: no TCP port opens on the chat's machine (the host serves only its s
     assert.equal(reg.socket, join(shared, "state", "chats", `${h.chat}.${h.proc.pid}.sock`));
   } finally {
     ws.ws.close();
+    await killRelay(r);
+  }
+});
+
+test("relay: over a slow link (setup over 5 s, past the host's hello timeout) the chat still connects and carries a turn", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  // Every byte from core 1.5 s late: the registry read, the bridge's start, its attach, READY and SYNCED each wait.
+  const { hc } = slowHc("slow-link", { delayMs: 1500 });
+  const r = await startRelay({ hc, deadMs: 10_000 });
+  const t0 = Date.now();
+  const ws = await joinRelay(r.port, h);
+  try {
+    await welcomed(ws, 30_000);
+    assert.ok(Date.now() - t0 > 5000, `the setup took ${Date.now() - t0} ms`);
+    await sameTurn(h, ws, "over a slow link");
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}\nbridge log:\n${bridgeLog(h.chat)}`);
+  } finally {
+    ws.ws.close();
+    await killRelay(r);
+  }
+});
+
+test("relay: a killed host gives 4004 even when the bridge finds no host before its attach lands", async (t) => {
+  if (skipped(t)) return;
+  const killed = await host();
+  const token = killed.registry!.token;
+  killed.proc.kill("SIGKILL");
+  await killed.exited;
+  const { hc } = slowHc("late-attach", { delayMs: 1500 });
+  const r = await startRelay({ hc, deadMs: 10_000 });
+  try {
+    const ws = await joinRelay(r.port, killed, token);
+    assert.equal(await closedCode(ws), 4004);
+    assert.match(r.log(), /no host: the bridge found none/);
+    await until(() => /exit 4: no host serves the chat/.test(bridgeLog(killed.chat)), 10_000, "the bridge's exit");
+    await until(() => bridges(killed.chat).length === 0, 10_000, "the bridge gone");
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}\nbridge log:\n${bridgeLog(killed.chat)}`);
+  } finally {
     await killRelay(r);
   }
 });

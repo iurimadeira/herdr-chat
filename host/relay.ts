@@ -327,7 +327,7 @@ export class Relay {
     };
   }
 
-  /** Waits for the bridge's READY, then SYNC until SYNCED: what came before is the terminal's, not ours. */
+  /** Waits for the bridge's READY, then SYNC until SYNCED or NOHOST: what came before READY is the terminal's, not ours. */
   private async sync(stream: Stream): Promise<Buffer> {
     const nonce = randomBytes(12).toString("hex");
     let seen = "";
@@ -340,8 +340,9 @@ export class Relay {
     stream.onClose = (why) => reject(new Error(`bridge ended before sync: ${why}`));
     stream.onData = (d) => {
       seen = (seen + d.toString("latin1")).slice(-PRESYNC_MAX);
+      // NOHOST before READY (no live host in the registry) or after it (its socket refused the bridge).
+      if (seen.includes(NOHOST_LINE)) return reject(new NoHost("no host: the bridge found none"));
       if (!ready) {
-        if (seen.includes(NOHOST_LINE)) return reject(new NoHost("no host: the bridge found none"));
         if (!seen.includes(READY_LINE)) return;
         ready = true;
         seen = "";
