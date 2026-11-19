@@ -3,11 +3,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Link, LINK_WINDOW } from "../../host/relaylink.ts";
 
-function pair(): { a: Link; b: Link; aGot: string[]; bGot: string[]; aToB: Buffer[]; bToA: Buffer[]; why: string[]; flush: () => void } {
+function pair(times?: { pingMs: number; deadMs: number }): { a: Link; b: Link; aGot: string[]; bGot: string[]; aToB: Buffer[]; bToA: Buffer[]; why: string[]; flush: () => void } {
   const aToB: Buffer[] = [];
   const bToA: Buffer[] = [];
-  const a = new Link((l) => aToB.push(Buffer.from(l, "latin1")));
-  const b = new Link((l) => bToA.push(Buffer.from(l, "latin1")));
+  const a = new Link((l) => aToB.push(Buffer.from(l, "latin1")), times);
+  const b = new Link((l) => bToA.push(Buffer.from(l, "latin1")), times);
   const aGot: string[] = [];
   const bGot: string[] = [];
   const why: string[] = [];
@@ -59,7 +59,7 @@ test("link: at most a window unacknowledged, and acks wait for a consumer that d
   for (let n = 0; n < 1000 && (aToB.length || bToA.length); n++) step();
   assert.deepEqual(why, []);
   assert.deepEqual(bGot, recs);
-  assert.ok(maxInFlight <= LINK_WINDOW + 300 * 1024, `in flight ${maxInFlight}`);
+  assert.ok(maxInFlight <= LINK_WINDOW, `in flight ${maxInFlight}`);
   assert.equal(a.queued(), 0, "nothing counted as queued once all is sent");
 });
 
@@ -72,4 +72,32 @@ test("link: a control byte, a lost line or garbage breaks it", () => {
     assert.equal(why.length, 1, `${JSON.stringify(inject.toString())}: ${why}`);
     assert.ok(b.broken);
   }
+});
+
+test("link: an ack held back while the consumer lagged goes out on the next tick, with no new line", async () => {
+  const { a, b, aToB, bToA, bGot, why } = pair({ pingMs: 100000, deadMs: 2000 });
+  let ok = false;
+  b.canAck = () => ok;
+  b.start();
+  a.send("x".repeat(256 * 1024));
+  for (const x of aToB.splice(0)) b.push(x);
+  assert.equal(bGot.length, 1);
+  assert.equal(bToA.length, 0, "no ack while the consumer lags");
+  ok = true;
+  // No drained() call: the tick retries.
+  const t0 = Date.now();
+  while (!bToA.length && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+  b.stop();
+  assert.match(Buffer.concat(bToA).toString("latin1"), /"t":"ack"/);
+  assert.deepEqual(why, []);
+});
+
+test("link: reports when its window fills, with the bytes in flight", () => {
+  const { a, aToB } = pair();
+  const full: number[] = [];
+  a.onWindowFull = (n) => full.push(n);
+  for (let i = 0; i < 4; i++) a.send("y".repeat(1 << 20));
+  assert.ok(full.length >= 1, "the window filled");
+  assert.ok(full.every((n) => n <= LINK_WINDOW), `in flight ${full}`);
+  assert.equal(aToB.reduce((n, x) => n + x.length, 0), full[0]);
 });

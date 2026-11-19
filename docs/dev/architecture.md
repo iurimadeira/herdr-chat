@@ -37,6 +37,30 @@ Herdr tab
   The Pi extension `extension/herdr-chat-lock.ts` reads that lock, so a Pi
   TUI never writes a session a chat has open.
 
+- Also serves its records as JSONL on a Unix socket,
+  `<stateDir>/chats/<chat>.<pid>.sock` (0600). A remote chat's host runs
+  `serve --socket-only`: no TCP or WebSocket port at all.
+
+## Remote chats (`host/relay.ts`, `host/bridge.ts`, `host/relaylink.ts`)
+
+A chat whose host runs on a machine herdr-core links to opens no port there:
+
+```
+mod ──WebSocket 127.0.0.1──▶ relay (one per machine, beside the Herdr app)
+        └─ hc connect ─▶ core ══machine link══▶ core on the machine
+                                                   └─ terminal (PTY): bridge <chat> ──Unix socket──▶ host
+```
+
+- The relay gives the mod the WebSocket a local host gives it. Per
+  connection it checks the chat's token from the registry on the machine
+  (`file.read`), then starts a bridge there (`terminal.run`, labelled
+  `herdr-chat.role=bridge`, never `herdr-chat.chat`) and attaches it.
+- The bridge joins its terminal's PTY to the host's socket. Records cross
+  the PTY in a line protocol with sequence numbers, acks and a 1 MiB window
+  (`relaylink.ts`); anything wrong on it closes the mod's WebSocket with
+  4001, and the mod reconnects and gets a snapshot through a new bridge.
+- Details, limits and close codes: [protocol.md](protocol.md) "v3.8".
+
 ## The mods (`herdr-app/mods/`)
 
 | Mod | What it does |

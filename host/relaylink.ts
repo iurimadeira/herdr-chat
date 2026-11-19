@@ -21,6 +21,8 @@ export const DEFAULT_LINK_TIMES: LinkTimes = { pingMs: 5000, deadMs: 20_000 };
 
 /** What the bridge prints once its PTY is raw, before anything else. */
 export const READY_LINE = '{"t":"ready","v":1}';
+/** What the bridge prints instead when no host serves the chat: the relay refuses the mod (4003). */
+export const NOHOST_LINE = '{"t":"nohost","v":1}';
 export const syncLine = (nonce: string): string => `{"t":"sync","n":"${nonce}"}`;
 export const syncedLine = (nonce: string): string => `{"t":"synced","n":"${nonce}"}`;
 export const SYNC_RE = /\{"t":"sync","n":"([A-Za-z0-9]{8,64})"\}\n/;
@@ -65,6 +67,9 @@ export class LinkLines {
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/** A line's length as out() writes it: `{"s":<seq>,` + body + LF. */
+const lineBytes = (seq: number, body: string): number => 6 + String(seq).length + body.length + 1;
+
 /** One side of a synced link: records out (windowed), records in (reassembled, acknowledged). */
 export class Link {
   onRecord: (text: string) => void = () => {};
@@ -73,7 +78,10 @@ export class Link {
   onQueueLow: () => void = () => {};
   /** Whether the consumer of our records keeps up: acks wait while it doesn't. */
   canAck: () => boolean = () => true;
+  /** The window filled with records still queued: the bytes in flight then (at most LINK_WINDOW). */
+  onWindowFull: (inFlight: number) => void = () => {};
   broken = false;
+  private full = false;
 
   private write: (line: string) => void;
   private times: LinkTimes;
@@ -155,11 +163,16 @@ export class Link {
 
   private pump(): void {
     const before = this.queuedBytes;
-    while (!this.broken && this.queue.length && this.sent - this.acked < LINK_WINDOW) {
+    // The whole line fits in the window before it goes: never more than LINK_WINDOW in flight.
+    while (!this.broken && this.queue.length && this.sent - this.acked + lineBytes(this.outSeq + 1, this.queue[0]!) <= LINK_WINDOW) {
       const body = this.queue.shift()!;
       this.queuedBytes -= body.length;
       this.sent += this.out(body);
     }
+    if (this.queue.length && !this.broken) {
+      if (!this.full) this.onWindowFull(this.sent - this.acked);
+      this.full = true;
+    } else this.full = false;
     if (before >= LINK_WINDOW && this.queuedBytes < LINK_WINDOW) this.onQueueLow();
   }
 
@@ -173,6 +186,8 @@ export class Link {
   private tick(): void {
     const now = Date.now();
     if (now - this.lastIn > this.times.deadMs) return this.break(`no line for ${now - this.lastIn} ms`);
+    // An ack held back while the consumer lagged, when nothing else would send it.
+    this.maybeAck();
     if (now - this.lastOut >= this.times.pingMs) this.out(`"t":"ping"}`);
   }
 

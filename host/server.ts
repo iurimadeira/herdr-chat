@@ -1,5 +1,5 @@
 import { createServer } from "node:net";
-import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server, Socket } from "node:net";
 import { WebSocketServer } from "ws";
@@ -96,21 +96,17 @@ export class ChatServer implements Sink {
    */
   async listenUnix(path: string): Promise<string | null> {
     try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      // A socket left by a host of this chat that died: chat ids are unique, so it's ours.
-      try {
-        unlinkSync(path);
-      } catch {}
+      // Only we can enter the directory, so the socket is ours alone between the bind and the
+      // chmod (no process-wide umask, which every other thread's file would get too).
+      const dir = dirname(path);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if ((statSync(dir).mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+      // The path names our pid: a socket there is one an earlier process with this pid left.
+      if (lstatSync(path, { throwIfNoEntry: false })?.isSocket()) unlinkSync(path);
       const unix = createServer((s) => this.acceptTcp(s, false));
       await new Promise<void>((resolve, reject) => {
         unix.once("error", reject);
-        // The umask makes the socket 0600 from the bind on; listen binds synchronously.
-        const umask = process.umask(0o177);
-        try {
-          unix.listen(path, () => resolve());
-        } finally {
-          process.umask(umask);
-        }
+        unix.listen(path, () => resolve());
       });
       chmodSync(path, 0o600);
       this.unix = unix;

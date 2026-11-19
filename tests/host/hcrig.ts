@@ -25,7 +25,8 @@ export class Rig {
   private base: NodeJS.ProcessEnv;
   private viaPids: string;
 
-  constructor() {
+  /** `home`: HOME for both cores, so their relative paths (file.read, a bridge's state dir) resolve under it. */
+  constructor(opts: { home?: string } = {}) {
     this.dir = realpathSync(mkdtempSync(join(tmpdir(), "hcrig-")));
     const tag = `${process.pid.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     this.a = `hcrig${tag}a`;
@@ -36,6 +37,7 @@ export class Rig {
     base.XDG_STATE_HOME = join(this.dir, "state");
     base.XDG_CONFIG_HOME = join(this.dir, "config");
     base.XDG_RUNTIME_DIR = join(this.dir, "run");
+    if (opts.home) base.HOME = opts.home;
     this.base = base;
     this.viaPids = join(this.dir, "via.pids");
   }

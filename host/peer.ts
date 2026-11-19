@@ -6,7 +6,8 @@ import { WebSocket } from "ws";
 import { MAX_RECORD_BYTES } from "./framing.ts";
 
 export function tokenMatches(given: unknown, expected: string): boolean {
-  if (typeof given !== "string") return false;
+  // An entry without a token (or an empty one) admits nobody.
+  if (typeof given !== "string" || !expected) return false;
   const a = createHash("sha256").update(given).digest();
   const b = createHash("sha256").update(expected).digest();
   return timingSafeEqual(a, b);

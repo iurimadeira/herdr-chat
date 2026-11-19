@@ -79,17 +79,32 @@ export class CoreClient {
     const timer = setTimeout(() => gone("hc connect: no hello"), timeoutMs);
     try {
       await hello;
+    } catch (e) {
+      // No hello (or a bad one): the child must not outlive the attempt.
+      c.end();
+      throw e;
     } finally {
       clearTimeout(timer);
     }
     return c;
   }
 
-  call(method: string, params: Record<string, unknown>): Promise<any> {
+  /** With `timeoutMs`, rejects when core doesn't answer in time; the client stays usable. */
+  call(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<any> {
     if (this.closed) return Promise.reject(new Error(`${method}: core link closed`));
     const id = ++this.id;
     this.frame(0, KIND.DATA, Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params })));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      if (timeoutMs === undefined) return this.pending.set(id, { resolve, reject });
+      const t = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method}: no answer in ${timeoutMs} ms`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(t), resolve(v)),
+        reject: (e) => (clearTimeout(t), reject(e)),
+      });
+    });
   }
 
   async attach(terminal: string, cols = 200, rows = 50): Promise<Stream> {

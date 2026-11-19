@@ -7,8 +7,8 @@
 // (file.read) and its token checked → `herdr-chat-host bridge <chat>` run there (terminal.run) and
 // attached → READY, SYNC/SYNCED → the hello forwarded, then records both ways. Anything wrong on the
 // link closes the WebSocket (code 4001): the mod reconnects as after any drop and starts again from
-// a snapshot, through a new bridge.
-import { mkdirSync } from "node:fs";
+// a snapshot, through a new bridge. One core client serves every connection.
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
@@ -16,21 +16,38 @@ import type { WebSocket } from "ws";
 import { MAX_RECORD_BYTES } from "./framing.ts";
 import { CoreClient } from "./hccore.ts";
 import type { Stream } from "./hccore.ts";
-import { atomicWrite } from "./registry.ts";
+import { atomicWrite, pidAlive } from "./registry.ts";
 import { tokenMatches, wsPeer, WS_ACK } from "./peer.ts";
-import { Link, LINK_WINDOW, READY_LINE, syncLine, syncedLine } from "./relaylink.ts";
+import { Link, LINK_WINDOW, NOHOST_LINE, READY_LINE, syncLine, syncedLine } from "./relaylink.ts";
 import type { LinkTimes } from "./relaylink.ts";
 import { hostBuild } from "./build.ts";
 
 const HELLO_TIMEOUT_MS = 5000;
 const SETUP_TIMEOUT_MS = Number(process.env.HERDR_CHAT_RELAY_SETUP_MS ?? "20000") || 20_000;
+/** A core call that doesn't answer in this long is given up on (the bridge then exits on its own). */
+const CALL_TIMEOUT_MS = 10_000;
 /** The mod's records held for the link past this: it isn't reading the bridge's acks. */
 const MAX_QUEUED = 64 << 20;
 const PRESYNC_MAX = 64 * 1024;
+/** What a connection may send between its hello and its token's check. */
+const MAX_EARLY = 1 << 20;
+/** Connections between hello and a synced bridge at once. */
+const MAX_SETUPS = 8;
 
 export const CLOSE_RESYNC = 4001;
 export const CLOSE_REFUSED = 4003;
 export const CLOSE_SETUP = 1011;
+export const CLOSE_BUSY = 1013;
+export const CLOSE_STOPPING = 1001;
+
+/** The WebSocket's close reason is fixed per code; the detail goes to the relay's log only. */
+const REASON: Record<number, string> = {
+  [CLOSE_RESYNC]: "resync",
+  [CLOSE_REFUSED]: "refused",
+  [CLOSE_SETUP]: "setup failed",
+  [CLOSE_BUSY]: "busy",
+  [CLOSE_STOPPING]: "relay stopping",
+};
 
 export type RelayOptions = {
   machine: string;
@@ -52,17 +69,31 @@ export function relayPath(stateDir: string, machine: string): string {
   return join(stateDir, "relays", `${machine}.json`);
 }
 
+export function relayLockPath(stateDir: string, machine: string): string {
+  return join(stateDir, "relays", `${machine}.lock`);
+}
+
+/** The bridge printed NOHOST: no host serves the chat. */
+class NoHost extends Error {}
+
 export class Relay {
   o: RelayOptions;
   wss: WebSocketServer | null = null;
   wsPort = 0;
-  private sessions = new Set<() => void>();
+  private sessions = new Map<() => void, () => void>();
+  private setups = 0;
+  private core: CoreClient | null = null;
+  private opening: Promise<CoreClient> | null = null;
+  private kills = new Set<Promise<unknown>>();
+  private locked = false;
 
   constructor(o: RelayOptions) {
     this.o = o;
   }
 
+  /** Takes the machine's lock (one relay per machine; a dead holder's lock is taken over), then listens. */
   async listen(): Promise<number> {
+    this.lock();
     const wss = new WebSocketServer({
       host: "127.0.0.1", port: 0, maxPayload: MAX_RECORD_BYTES, perMessageDeflate: false,
       verifyClient: (info: { origin?: string }) => !info.origin,
@@ -79,6 +110,28 @@ export class Relay {
     return this.wsPort;
   }
 
+  private lock(): void {
+    const path = relayLockPath(this.o.stateDir, this.o.machine);
+    mkdirSync(join(this.o.stateDir, "relays"), { recursive: true, mode: 0o700 });
+    for (let tries = 0; ; tries++) {
+      try {
+        const fd = openSync(path, "wx", 0o600);
+        writeSync(fd, `${process.pid}\n`);
+        closeSync(fd);
+        this.locked = true;
+        return;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST" || tries > 2) throw e;
+      }
+      const holder = Number(readFileSync(path, "utf8").trim()) || 0;
+      if (holder && holder !== process.pid && pidAlive(holder)) throw new Error(`relay pid ${holder} already serves machine ${this.o.machine}`);
+      // Its holder died (SIGKILL): the lock and the entry are stale.
+      try {
+        unlinkSync(path);
+      } catch {}
+    }
+  }
+
   save(pid: number | null, wsPort: number | null): void {
     const b = hostBuild();
     const entry: RelayEntry = { v: 1, machine: this.o.machine, pid, wsPort, startedAt: Math.round(performance.timeOrigin), version: b.version, build: b.build };
@@ -87,9 +140,52 @@ export class Relay {
   }
 
   async close(): Promise<void> {
-    for (const end of this.sessions) end();
+    for (const stop of [...this.sessions.keys()]) stop();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));
-    this.save(null, null);
+    // The bridges' kills go out before the core link does.
+    await Promise.allSettled([...this.kills]);
+    this.core?.end();
+    if (this.locked) {
+      // Only what is ours: another relay may hold the machine by now.
+      const path = relayLockPath(this.o.stateDir, this.o.machine);
+      let holder = 0;
+      try {
+        holder = Number(readFileSync(path, "utf8").trim()) || 0;
+      } catch {}
+      if (holder === process.pid) {
+        this.save(null, null);
+        try {
+          unlinkSync(path);
+        } catch {}
+      }
+      this.locked = false;
+    }
+  }
+
+  /** The relay's one core client, opened on first use and again after it closes. */
+  private coreClient(): Promise<CoreClient> {
+    if (this.core && !this.core.closed) return Promise.resolve(this.core);
+    if (!this.opening) {
+      this.opening = CoreClient.open(this.o.hc)
+        .then((c) => {
+          this.core = c;
+          c.onClose = (why) => {
+            if (this.core === c) this.core = null;
+            for (const gone of [...this.sessions.values()]) gone();
+            this.o.log(`core link closed: ${why}`);
+          };
+          return c;
+        })
+        .finally(() => (this.opening = null));
+    }
+    return this.opening;
+  }
+
+  /** Kills a bridge terminal; waits for core's answer (bounded) before the relay may exit. */
+  private kill(c: CoreClient, bridge: string, tag: string): void {
+    const p = c.call("terminal.kill", { terminal: bridge }, CALL_TIMEOUT_MS).catch((e) => this.o.log(`${tag}: kill ${bridge}: ${e instanceof Error ? e.message : e}`));
+    this.kills.add(p);
+    void p.finally(() => this.kills.delete(p));
   }
 
   private accept(ws: WebSocket): void {
@@ -107,23 +203,22 @@ export class Relay {
       o.log(`${tag}: ${why}`);
       clearTimeout(helloTimer);
       link?.stop();
-      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(code, why.slice(0, 120));
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(code, REASON[code] ?? "");
       release();
     };
-    // The bridge and the core link go with the connection; setup calls it again for what it made after an end.
+    // The bridge goes with the connection; setup calls it again for a bridge it learns of after an end.
     const release = (): void => {
-      const c = core;
-      const b = bridge;
-      core = null;
+      if (core && bridge && !core.closed) this.kill(core, bridge, tag);
       bridge = null;
-      if (c && b) void c.call("terminal.kill", { terminal: b }).catch(() => {}).finally(() => c.end());
-      else c?.end();
     };
-    const stop = (): void => end(1001, "relay stopping");
-    this.sessions.add(stop);
+    const stop = (): void => end(CLOSE_STOPPING, "relay stopping");
+    this.sessions.set(stop, () => {
+      if (core) end(CLOSE_RESYNC, "core link closed");
+    });
     const helloTimer = setTimeout(() => end(CLOSE_REFUSED, "no hello"), HELLO_TIMEOUT_MS);
     let hello: string | null = null;
     const early: string[] = [];
+    let earlyBytes = 0;
 
     ws.on("error", () => {});
     ws.on("close", () => end(1000, "the mod closed"));
@@ -138,10 +233,19 @@ export class Relay {
       if (hello === null) {
         hello = text;
         clearTimeout(helloTimer);
-        void setup(text).catch((e) => end(CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`));
+        if (this.setups >= MAX_SETUPS) return end(CLOSE_BUSY, `busy: ${this.setups} connections setting up`);
+        this.setups++;
+        void setup(text)
+          .catch((e) => end(e instanceof NoHost ? CLOSE_REFUSED : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`))
+          .finally(() => {
+            this.setups--;
+          });
         return;
       }
       if (!link) {
+        // Held until the token is checked and the bridge synced: bounded, for a client not yet known.
+        earlyBytes += text.length;
+        if (earlyBytes > MAX_EARLY) return end(CLOSE_REFUSED, `${earlyBytes} bytes before the link was up`);
         early.push(text);
         return;
       }
@@ -160,19 +264,20 @@ export class Relay {
       tag = `${o.machine}/${h.chat}`;
       const deadline = setTimeout(() => end(CLOSE_SETUP, "setup timed out"), SETUP_TIMEOUT_MS);
       try {
-        const c = await CoreClient.open(o.hc);
+        const c = await this.coreClient();
         core = c;
-        if (ended) return release();
-        c.onClose = (why) => end(CLOSE_RESYNC, `core: ${why}`);
+        if (ended) return;
         const regPath = `${o.remoteStateDir.replace(/\/+$/, "")}/chats/${h.chat}.json`;
-        const read = await c.call("file.read", { path: regPath, on: o.machine });
         let entry: any = null;
         try {
-          entry = JSON.parse(read.text);
-        } catch {}
+          entry = JSON.parse((await c.call("file.read", { path: regPath, on: o.machine }, CALL_TIMEOUT_MS)).text);
+        } catch (e) {
+          // Told apart only in the log: the mod learns nothing of which chats exist.
+          return end(CLOSE_REFUSED, `no registry entry: ${e instanceof Error ? e.message : e}`);
+        }
         // The token first: nothing starts on the machine for a client that doesn't know it.
-        if (!entry || !tokenMatches(h.token, String(entry.token ?? ""))) return end(CLOSE_REFUSED, "a wrong token");
-        if (!entry.socket || !entry.pid) return end(CLOSE_REFUSED, "the chat's host isn't serving its socket");
+        if (!entry || !tokenMatches(h.token, typeof entry.token === "string" ? entry.token : "")) return end(CLOSE_REFUSED, "a wrong token");
+        if (!entry.pid) return end(CLOSE_REFUSED, "no host: the chat's host has exited");
         if (ended) return;
         const argv = [
           ...(o.node ? ["/usr/bin/env", `HERDR_CHAT_NODE=${o.node}`] : []),
@@ -180,14 +285,16 @@ export class Relay {
           "--ping-ms", String(o.times.pingMs), "--dead-ms", String(o.times.deadMs),
         ];
         o.log(`${tag}: starting a bridge`);
+        // Not labelled herdr-chat.chat: the mod finds a chat's host by that label.
         const run = await c.call("terminal.run", {
           on: o.machine, argv, no_parent: true, no_notify: true, rm: true,
-          labels: { "herdr-chat.chat": h.chat, "herdr-chat.role": "bridge" },
-        });
-        const address = String(run.address).includes("/") ? String(run.address) : `${o.machine}/${run.address}`;
-        bridge = address;
+          labels: { "herdr-chat.bridge": h.chat, "herdr-chat.role": "bridge" },
+        }, CALL_TIMEOUT_MS);
+        bridge = String(run.address).includes("/") ? String(run.address) : `${o.machine}/${run.address}`;
+        // Ended while core started it: kill it now that its address is known.
         if (ended) return release();
-        const stream = await c.attach(address);
+        const stream = await c.attach(bridge);
+        if (ended) return release();
         const rest = await this.sync(stream);
         if (ended) return;
         const l = new Link((line) => stream.write(Buffer.from(line, "latin1")), o.times);
@@ -222,6 +329,7 @@ export class Relay {
     stream.onData = (d) => {
       seen = (seen + d.toString("latin1")).slice(-PRESYNC_MAX);
       if (!ready) {
+        if (seen.includes(NOHOST_LINE)) return reject(new NoHost("no host: the bridge found none"));
         if (!seen.includes(READY_LINE)) return;
         ready = true;
         seen = "";

@@ -8,7 +8,7 @@ import { Chat } from "./chat.ts";
 import { Attachments } from "./attachments.ts";
 import { ChatServer } from "./server.ts";
 import { Terminal } from "./terminal.ts";
-import { writeRegistry, readRegistry, pidAlive, socketPath } from "./registry.ts";
+import { writeRegistry, readRegistry, pidAlive, socketPath, sweepSockets } from "./registry.ts";
 import type { RegistryEntry } from "./registry.ts";
 import { ChatClient, parseWait } from "./client.ts";
 import { createAdapter, DEFAULT_PROVIDER, providerNames, tuiSession } from "./providers/index.ts";
@@ -20,10 +20,12 @@ import { PaneWatch } from "./panewatch.ts";
 import { hostBuild } from "./build.ts";
 import { Relay, relayPath } from "./relay.ts";
 import { runBridge } from "./bridge.ts";
+import { cappedLog } from "./logfile.ts";
 import { DEFAULT_LINK_TIMES } from "./relaylink.ts";
 import type { LinkTimes } from "./relaylink.ts";
 
-const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
+const USAGE = `herdr-chat-host serve   --chat <id> --cwd <dir> --state-dir <dir> [--socket-only] [--provider pi] [--session <file>] [--after-pid <pid> [--model <provider/id>] [--thinking <level>]] [--app-home <dir>] [--<provider> <cmd>] [-- <agent args>]
+  (--socket-only: a remote chat, reached through the relay: only the Unix socket <state-dir>/chats/<chat>.<pid>.sock, no TCP or WebSocket port)
   (--app-home: the Herdr app's home, whose app it asks to close its hidden pane once its chat's pane is gone; default $HERDR_APP_HOME, else ~/.config/herdr-app)
   (--provider defaults to the chat's registered provider, else pi; --pi <cmd> or HERDR_CHAT_PI picks the pi binary)
 herdr-chat-host run     [--provider pi|claude|codex] [--session <file>] [--cwd <dir>] [-- <agent args>]
@@ -159,7 +161,8 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
       await chat.stopAgent();
     } catch {}
     chat.releaseLock();
-    save({ pid: null, port: null, wsPort: null, socket: null });
+    // A newer host of this chat may have taken the entry over: it stays.
+    if (readRegistry(stateDir, chatId)?.pid === process.pid) save({ pid: null, port: null, wsPort: null, socket: null });
     term.status("idle");
     term.close();
     await server.close().catch(() => {});
@@ -174,8 +177,16 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
     log(`unhandled rejection: ${(e as Error)?.stack ?? e}`);
   });
 
-  const ports = await server.listen();
-  save({ ...ports, socket: await server.listenUnix(socketPath(stateDir, chatId)) });
+  // --socket-only: a remote chat's host (the relay's bridge is its only way in): no TCP or WebSocket port.
+  const socketOnly = a.flags.has("socket-only");
+  const ports = socketOnly ? {} : await server.listen();
+  sweepSockets(stateDir, chatId);
+  const socket = await server.listenUnix(socketPath(stateDir, chatId, process.pid));
+  if (socketOnly && !socket) {
+    log("--socket-only and no socket: nothing to serve on");
+    return void exit(1);
+  }
+  save({ ...ports, socket });
   term.line(`herdr-chat-host · chat ${chatId} · ${cwd}`);
   if (extra.hint) term.line(extra.hint);
   if (extra.warning) term.line(`! ${extra.warning}`);
@@ -213,13 +224,11 @@ async function relay(a: Args): Promise<void> {
   const machine = a.flags.get("machine")?.[0] ?? die("relay needs --machine");
   if (!/^[\w.-]+$/.test(machine)) die("--machine must be [A-Za-z0-9_.-]");
   const stateDir = resolve(a.flags.get("state-dir")?.[0] ?? defaultStateDir());
-  const logFile = join(stateDir, "relays", `${machine}.log`);
   mkdirSync(join(stateDir, "relays"), { recursive: true, mode: 0o700 });
-  const log = (m: string): void => {
-    try {
-      appendFileSync(logFile, `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 });
-    } catch {}
-  };
+  const log = cappedLog(join(stateDir, "relays", `${machine}.log`), () => `[${process.pid}] `);
+  // Nothing one connection does may end the relay of every chat on the machine.
+  process.on("uncaughtException", (e) => log(`uncaught: ${e?.stack ?? e}`));
+  process.on("unhandledRejection", (e) => log(`unhandled rejection: ${(e as Error)?.stack ?? e}`));
   const r = new Relay({
     machine, stateDir, log,
     host: a.flags.get("host")?.[0] ?? "herdr-chat-host",
@@ -228,7 +237,7 @@ async function relay(a: Args): Promise<void> {
     hc: a.flags.get("hc")?.[0] ?? process.env.HERDR_CHAT_HC ?? "hc",
     times: linkTimes(a),
   });
-  const port = await r.listen();
+  const port = await r.listen().catch((e) => die(`relay: ${e instanceof Error ? e.message : e}`));
   log(`relay machine=${machine} ws=127.0.0.1:${port} pid=${process.pid} registry=${relayPath(stateDir, machine)}`);
   const stop = (): void => {
     log("shutting down");

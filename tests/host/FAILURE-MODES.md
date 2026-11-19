@@ -245,12 +245,23 @@ Two private hc sessions (A and B) linked with `hc machine add --via` (`hcrig.ts`
 | Failure | Test |
 |---|---|
 | The Unix socket is readable by others, or left behind after exit | `socket.test.ts`: mode 0600, welcome and snapshot, a send, a wrong token gets nothing, the file gone after exit |
+| A host removes another host's socket (a stale one's cleanup, or the old host's exit after a hand-off), or clears its registry entry | `socket.test.ts` "two hosts of one chat": per-pid paths; a dead host's socket and the legacy name swept, a regular file and another chat's socket kept; the new host's socket and entry survive the old host's exit and serve a client |
+| A remote host opens a TCP or WebSocket port | `socket.test.ts` "--socket-only": `port` and `wsPort` null, no listener in `ss -ltnp`; `relay.test.ts` "no TCP port" |
+| An empty or missing registry token matches | `peer.test.ts` |
+| The `hc connect` child outlives a hello that never comes, or a core call never answers | `hccore.test.ts`: a fake `hc` that never answers; the open rejects and the child is dead; a call with a timeout rejects and the client stays usable |
 | Unicode, control characters or a 1 MiB record changes on the way | `relay.test.ts` "round-trip byte for byte": relayed records deepEqual the TCP client's, and the agent got the prompt byte for byte |
-| A wrong token, or a hello without `chat`, gets records or starts a bridge | `relay.test.ts` "a wrong token": 4003, nothing received, no "starting a bridge" in the log, no bridge terminal |
-| A mod that stops reading lets the stream run more than ~4 MiB ahead (core repaints) | `relay.test.ts` "a burst over 4 MiB": 18 turns held, at most the window delivered, all intact after, then a 4 MiB+ snapshot |
-| An injected byte, a lost line or garbage on the PTY is taken as data | `relaylink.test.ts` "a control byte, a lost line or garbage breaks it" |
-| The machine link drops mid-stream: lost or repeated turns | `relay.test.ts` "held down mid-stream": core's repaint breaks the link, 4001, the chat goes on, a reconnect's snapshot has every turn once; "killed and back at once": intact or resynced |
+| A bridge shows as the chat to the mod (its host lookup, orphan sweep, menus), notifies, or has a parent | `relay.test.ts` "round-trip": no B terminal labelled `herdr-chat.chat=<chat>`; `hc get` gives `parent: null`, `notify: false`, labels `herdr-chat.role=bridge`, `herdr-chat.bridge`. The mod's own filters are not unit-tested (its modules import Herdr's runtime) |
+| A record from the mod bigger than the window resyncs forever | `relay.test.ts` "a 6 MiB record from the mod": it reaches the agent byte for byte, no close, no link error |
+| A wrong token, an unknown chat or a hello without `chat` gets records, starts a bridge, or learns whether the chat exists | `relay.test.ts` "a wrong token": 4003 with the same reason `refused` for all three, nothing received, the detail only in the relay's log, no bridge |
+| A chat whose host is gone loops on reconnects | `relay.test.ts` "host is gone": an exited host's entry gets 4003 and no bridge; a SIGKILLed host's gets 4003 from the bridge's `nohost` (exit 4) |
+| Two relays serve one machine, or a dead one's lock blocks the next | `relay.test.ts` "one relay per machine": the second exits non-zero and the entry keeps the first's pid; after a SIGKILL a new relay takes over; SIGTERM clears the entry and the lock |
+| A mod that stops reading lets more than the window into the PTY (core repaints past ~4 MiB) | `relay.test.ts` "a burst over 4 MiB": 18 turns held, at most the ack window delivered, all intact after; the bridge's exit log says the window filled and at most `LINK_WINDOW` bytes were in flight; then a 4 MiB+ snapshot. `relaylink.test.ts` "at most a window" checks the exact bound |
+| An ack held back while the consumer lagged is never sent | `relaylink.test.ts` "an ack held back goes out on a tick" |
+| An injected byte, a lost line or garbage on the PTY is taken as data | `relaylink.test.ts` "a control byte, a lost line or garbage breaks it"; `relay.test.ts` "a stray control byte": a second core A client attached to the bridge's terminal writes 0x18, across the machine link and core B into its PTY; the bridge exits 6, 4001, a reconnect's snapshot has every turn, and turns go on |
+| The machine link drops mid-stream: lost or repeated turns | `relay.test.ts` "held down mid-stream": the link breaks, 4001, the chat goes on, a reconnect's snapshot has every turn once |
+| The machine link drops and comes back at once | `relay.test.ts` "killed and back at once": no fixed outcome (core may carry the link over or repaint); what arrives is in order, and a resync's snapshot has every turn once |
 | Killing the relay kills the host or agent, or strands the bridge | `relay.test.ts` "killing the relay": the bridge exits within `--dead-ms`, the same agent, a new relay serves the chat |
-| A port opens on the chat's machine, or the relay listens beyond loopback | `relay.test.ts` "no TCP port": `ss -ltnp` per pid |
-| A key typed into the bridge's terminal | not covered end to end: `hc keys` on a terminal carrying megabyte lines stalled in core and never delivered the key; the byte check itself is in `relaylink.test.ts` |
+| A connection that ends while its bridge starts leaks the bridge | not covered end to end (the window is core's `terminal.run`); the relay kills a bridge whose address comes back after the end, and the bridge exits 8 when no SYNC comes within `--dead-ms` |
+| A port opens on the chat's machine, or the relay listens beyond loopback | `relay.test.ts` "no TCP port": `ss -ltnp` per pid; the host's socket is `<chat>.<pid>.sock` |
 | The relay's queued-bytes count drifts (it went negative before) | `relaylink.test.ts` "at most a window": `queued()` is 0 after everything is sent |
+| The relay or bridge log grows without end | `logfile.test.ts`: past the cap the file moves to `.1` once |

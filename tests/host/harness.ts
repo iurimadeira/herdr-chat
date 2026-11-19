@@ -38,6 +38,8 @@ export type HostOptions = {
   /** Another provider than pi: `--provider <p> --<p> <agent>`. */
   provider?: string;
   agent?: string;
+  /** Serve only the Unix socket (a remote chat): no TCP or WebSocket port. */
+  socketOnly?: boolean;
   /** More serve flags, before `--` (e.g. --after-pid). */
   hostArgs?: string[];
 };
@@ -97,6 +99,7 @@ export class Host {
     const agent = p ? ["--provider", p, `--${p}`, this.opts.agent ?? p] : ["--pi", this.opts.pi ?? FAKE_PI];
     const args = [HOST_ENTRY, "serve", "--chat", this.chat, "--cwd", this.cwd, "--state-dir", this.stateDir, ...agent];
     if (this.opts.session) args.push("--session", this.opts.session);
+    if (this.opts.socketOnly) args.push("--socket-only");
     if (this.opts.hostArgs) args.push(...this.opts.hostArgs);
     const piArgs = this.opts.piArgs ?? (p ? [] : ["--session-dir", join(this.dir, "sessions")]);
     if (piArgs.length) args.push("--", ...piArgs);
@@ -111,7 +114,7 @@ export class Host {
     const t0 = Date.now();
     for (;;) {
       const reg = readRegistry(this.stateDir, this.chat);
-      if (reg?.port && reg.pid === this.proc.pid) break;
+      if ((this.opts.socketOnly ? reg?.socket : reg?.port) && reg!.pid === this.proc.pid) break;
       if (this.exitCode !== null) throw new Error(`host exited early: ${this.screen}`);
       if (Date.now() - t0 > 10_000) throw new Error(`host did not register: ${this.screen}`);
       await sleep(20);
@@ -122,7 +125,7 @@ export class Host {
 
   async connect(kind = "test"): Promise<ChatClient> {
     const reg = readRegistry(this.stateDir, this.chat)!;
-    const c = await ChatClient.connect(reg.port!, reg.token, kind);
+    const c = await ChatClient.connect(this.opts.socketOnly ? reg.socket! : reg.port!, reg.token, kind);
     this.clients.push(c);
     return c;
   }
