@@ -725,3 +725,73 @@ test("relay: 8 setups at once, the ninth busy (1013); an attach core never answe
     await killRelay(r);
   }
 });
+
+test("relay: over 1 MiB from the mod before its token is checked closes 4003, and its bridge goes", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  // The attach never answers: the link never comes up, so everything after the hello is held.
+  const { hc, stallFile } = slowHc("early-bytes", { stall: ["terminal.attach"] });
+  writeFileSync(stallFile, "");
+  const r = await startRelay({ hc });
+  try {
+    const ws = await joinRelay(r.port, h);
+    const code = closedCode(ws);
+    const chunk = JSON.stringify({ t: "req", id: 1, op: "send", text: "x".repeat(300 * 1024) });
+    for (let i = 0; i < 4; i++) ws.ws.send(chunk);
+    assert.equal(await code, 4003);
+    assert.match(r.log(), /bytes before the link was up/);
+    await until(() => bridges(h.chat).length === 0, 15_000, "its bridge killed");
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    rmSync(stallFile, { force: true });
+    await killRelay(r);
+  }
+});
+
+test("relay: a machine core doesn't know closes 1011 (retry), not refused", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  const r = await startRelay({ machine: "nosuch" });
+  try {
+    const ws = await joinRelay(r.port, h);
+    assert.equal(await closedCode(ws), 1011);
+    assert.match(r.log(), /registry read failed: .*nosuch/);
+  } finally {
+    await killRelay(r);
+  }
+});
+
+test("relay: a registry read core never answers closes 1011 (retry) at the call's timeout", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  const { hc, stallFile } = slowHc("stall-read", { stall: ["file.read"] });
+  writeFileSync(stallFile, "");
+  const r = await startRelay({ hc });
+  try {
+    const t0 = Date.now();
+    const ws = await joinRelay(r.port, h);
+    assert.equal(await closedCode(ws), 1011);
+    assert.ok(Date.now() - t0 < 19_000, "the call's timeout, before the setup deadline");
+    assert.match(r.log(), /registry read failed: .*no answer/);
+    assert.equal(bridges(h.chat).length, 0, "nothing started on the machine");
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    rmSync(stallFile, { force: true });
+    await killRelay(r);
+  }
+});
+
+test("bridge: no SYNC within --dead-ms exits 8, and the host lives on", async (t) => {
+  if (skipped(t)) return;
+  const h = await host();
+  // As the relay starts it, in a terminal on the machine, but nobody answers its READY.
+  rig!.hc([
+    "run", "--bg", "--no-parent", "--no-notify", "--label", `herdr-chat.bridge=${h.chat}`, "--",
+    HOST_NODE, HOST_ENTRY, "bridge", h.chat, "--state-dir", join(shared, "state"), "--ping-ms", "100", "--dead-ms", "800",
+  ], rig!.b);
+  await until(() => /exit 8: no sync in 800 ms/.test(bridgeLog(h.chat)), 10_000, "the bridge's exit 8");
+  await until(() => bridges(h.chat).length === 0, 10_000, "the bridge gone");
+  assert.equal(h.proc.exitCode, null, "the host lives");
+});
