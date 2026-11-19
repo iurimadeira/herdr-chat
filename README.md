@@ -147,9 +147,44 @@ A chat continued from a TUI (Continue as chat) keeps that TUI's agent home
 it. Only a configured launcher command (such as `acc` or `aco`) may still
 choose its own.
 
+### Chats in remote spaces
+
+A chat opened in a space on another machine (a Herdr remote space) runs its
+agent there, in the space's folder. Its host runs on that machine
+(installed with `--host-only`), and the chat reaches it through a relay that
+the Mac starts for each machine. The relay listens on this Mac's 127.0.0.1
+only and goes through Herdr's own link to the machine. Each machine needs an
+entry in `machines`:
+
+```json
+{
+  "machines": {
+    "lab": {
+      "host": "/home/me/herdr-chat/bin/herdr-chat-host",
+      "node": "/home/me/.asdf/shims/node",
+      "hc": "/home/me/.local/bin/hc",
+      "stateDir": "/home/me/.local/state/herdr-chat",
+      "agents": { "claude": "/home/me/.local/bin/claude", "codex": "codex" }
+    }
+  }
+}
+```
+
+The key is the machine's name in Herdr. `host` is required: the path the
+`--host-only` install printed. `node` is the Node that runs it, and `hc` is
+that machine's `hc` (each defaults to the one on its PATH). `stateDir`
+must be an absolute path (default: `.local/state/herdr-chat` in its home).
+`agents` gives each agent's command there (default: `pi`, `claude` or
+`codex` on the host's PATH there). Nothing in this file except `machines.<name>`
+goes to the machine: its `env` and per-agent settings stay this Mac's.
+
 ## Limitations
 
-- **macOS only.** Spaces on other machines still open the agent's TUI.
+- **The app is macOS only.** A remote space's chat runs its host on the
+  space's machine (above), but these still run on the Mac: `/tui`, `/login`,
+  opening a file and pasting an image.
+- **A remote chat's host keeps running after its tab closes.** End it on
+  that machine (`hc ls --label herdr-chat.role=host`).
 - **Run the install again after a Herdr update.** The agents list and the
   right-click menu are copies of Herdr's, made at install time.
 - **Continue as chat on Codex guesses the session** when Codex runs on its

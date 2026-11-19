@@ -59,6 +59,12 @@ mod ──WebSocket 127.0.0.1──▶ relay (one per machine, beside the Herdr 
   the PTY in a line protocol with sequence numbers, acks and a 1 MiB window
   (`relaylink.ts`); anything wrong on it closes the mod's WebSocket with
   4001, and the mod reconnects and gets a snapshot through a new bridge.
+  (The app's WebSocket doesn't give the mod close codes yet, so it
+  reconnects after its usual backoff.)
+- The mod (`chat/remote.js`, `chat/connection.js`) starts the remote host
+  with `hc run --on <machine>` in the space's folder, starts the relay on
+  every attempt (exit 3: one already serves), and reads both registries:
+  the host's on the machine, the relay's here.
 - Details, limits and close codes: [protocol.md](protocol.md) "v3.8".
 
 ## The mods (`herdr-app/mods/`)

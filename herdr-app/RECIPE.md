@@ -137,8 +137,12 @@ install changed, and removes the unpacked release.
   original changed shape is left out, with the reason.
 - Some screens exist only in the TUIs (Pi extension panels, Claude Code's
   and Codex's `/mcp` and `/permissions`): `/tui`.
-- Continue as chat is Pi only; spaces on other machines open the TUI.
-- macOS only.
+- Continue as chat is Pi only.
+- A chat in a space on another machine runs its host there (`--host-only`
+  install, `machines.<name>` in settings.json), reached through this Mac's
+  relay. `/tui`, `/login`, files and images still run here, and its host is
+  not ended when the tab closes.
+- The app is macOS only.
 
 ## Done when
 

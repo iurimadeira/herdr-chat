@@ -693,7 +693,7 @@ The mod connects to `wsPort` as it does to a host's, with one more field in `hel
 
 Close codes, each with a fixed reason (the detail goes only to the relay's log, so a refused client learns nothing of which chats exist):
 
-| Code | Reason | When | The mod |
+| Code | Reason | When | The mod, once it gets the code (below) |
 | --- | --- | --- | --- |
 | `4001` | `resync` | the link broke, the bridge ended, core's link closed, or the bridge stopped reading for 64 MiB | reconnects at once; a new bridge, and the snapshot after `welcome` replaces all it had |
 | `4003` | `refused` | a bad or missing hello, no registry entry, a malformed entry, a wrong token, too much before sync | stops: retrying gets the same answer |
@@ -702,7 +702,21 @@ Close codes, each with a fixed reason (the detail goes only to the relay's log, 
 | `1011` | `setup failed` | setup failed or timed out, or the registry read failed for another reason than a missing file | reconnects later |
 | `1001` | `relay stopping` | the relay got a stop signal | reconnects later |
 
+The app's WebSocket doesn't give the mod a close code yet: Herdr's `websocket` module turns the close frame into an error ("closed by peer"). The last column is the policy `closeAction` (`herdr-app/mods/chat/remote.js`) applies to `link.closeCode` once it is there. Until then every close is the same to the mod: it waits its backoff (250 ms, then 0.5, 1 and 2 s) and tries again. A close before `welcome` also re-reads the registry on the machine and starts a host when none runs there. So a 4003 retries every 2 s (the chat shows "Starting…" or "Reconnecting…") instead of failing, and a 4001 waits its backoff.
+
 A resync is the only recovery from a broken link: the relay closes with 4001 and the mod reconnects. Records never resume in the middle; a snapshot replaces them, so a resync loses or repeats no turn.
+
+### The mod's side
+
+A chat tab with a `machine` prop (new-chat sets it from the space's `machine`; a new chat and `/resume` from it keep it) is a remote chat. Its `cwd` is a path on that machine. On each attempt the mod:
+
+1. reads `machines.<m>` from the chat's `settings.json` (README "Chats in remote spaces"); without it the chat fails, naming the missing key;
+2. reads `<stateDir>/chats/<chat>.json` on the machine (`readTextFile` with `on`; a relative `stateDir` is read from the machine's home). A failed read (the machine unreachable) waits and tries again. No usable entry (none, another chat's, no token, a bad `pid` or `socket`) and no live host terminal for the chat there: it starts one, `hc run --on <m> --bg --keep --no-parent` in `cwd`, labelled `herdr-chat.chat=<chat>` and `herdr-chat.role=host`, running `serve --socket-only` with the machine's `node`, `hc`, `stateDir` and agent command. `hc run --on` succeeds whether or not the host lives, so a host the chat started that hasn't shown up in 8 s is not started again: the chat fails until Retry;
+3. waits while the entry's `socket` is `null` (a host still binding it);
+4. starts this Mac's relay for the machine every time: `hc run --rm --timeout 2` of `herdr-chat-host relay --machine <m>`. A relay still running after 2 s is the new relay; exit 3 means one already serves the machine; any other exit or a failed `hc run` fails the chat until Retry. It never judges a relay alive by its `pid`;
+5. reads `relays/<m>.json` here and connects to its `wsPort`, with `chat` and the entry's `token` in `hello`.
+
+A remote host is never hidden, healed, updated or swept by the app: it has no pane in this Mac's layout, and its state dir holds that machine's chats. Its terminal is found by its `herdr-chat.chat` label with role `host` (or `subagent`) on that machine, never a `bridge`.
 
 A relay that dies leaves the host and its agent running; the bridge it started stops getting pings and exits after `--dead-ms`. A new relay serves new connections; it doesn't adopt old bridges.
 
