@@ -3,7 +3,7 @@
 // Two private hc sessions on this box stand in for the Mac and the remote machine.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -298,6 +298,80 @@ test("relay: the machine link killed and back at once mid-stream: the records ar
     }
   } catch (e) {
     throw new Error(`${(e as Error).message}\nrelay log:\n${r.log()}`);
+  } finally {
+    ws.ws.close();
+    r.proc.kill("SIGKILL");
+  }
+});
+
+/** The bridge's pid, from its log on machine B. */
+function bridgePid(chat: string): number {
+  const log = readFileSync(join(shared, "state", "chats", `${chat}.bridge.log`), "utf8");
+  const m = [...log.matchAll(/\[(\d+)\] bridge chat=/g)].pop();
+  assert.ok(m, "the bridge logged its start");
+  return Number(m[1]);
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** TCP sockets listening for `pid`: local addresses. */
+function listening(pid: number): string[] {
+  const out = execFileSync("ss", ["-ltnpH"], { encoding: "utf8" });
+  return out.split("\n").filter((l) => l.includes(`pid=${pid},`)).map((l) => l.trim().split(/\s+/)[3]!);
+}
+
+test("relay: killing the relay leaves the host and its agent running; the bridge goes, a new relay serves the chat", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  const ws = await joinRelay(r.port, h);
+  await welcomed(ws);
+  await sameTurn(h, ws, "before the relay dies");
+  const bridge = bridgePid(h.chat);
+  // The hosts share one pi-commands log: count agent starts across the kill.
+  const starts = (): number => h.piCommands().filter((c) => c.type === "_start").length;
+  const started = starts();
+  r.proc.kill("SIGKILL");
+  const t0 = Date.now();
+  while (alive(bridge) && Date.now() - t0 < DEAD_MS * 4) await sleep(100);
+  assert.ok(!alive(bridge), "the bridge exits once its relay stops pinging");
+  assert.equal(bridges().length, 0, "no bridge terminal left");
+  assert.equal(h.proc.exitCode, null, "the host lives");
+
+  const r2 = await startRelay();
+  try {
+    const again = await joinRelay(r2.port, h);
+    await welcomed(again);
+    const snap = again.records.find((x) => x.t === "snapshot")!;
+    assert.deepEqual(snap.items, h.client.items);
+    await sameTurn(h, again, "after a new relay");
+    assert.equal(starts(), started, "the same agent all along");
+    again.ws.close();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nrelay log:\n${r2.log()}`);
+  } finally {
+    r2.proc.kill("SIGKILL");
+  }
+});
+
+test("relay: no TCP port opens on the chat's machine; the relay listens on 127.0.0.1 only", { skip }, async () => {
+  const h = await host();
+  const r = await startRelay();
+  const ws = await joinRelay(r.port, h);
+  try {
+    await welcomed(ws);
+    const bridge = bridgePid(h.chat);
+    assert.deepEqual(listening(bridge), [], "the bridge listens on nothing");
+    assert.deepEqual(listening(h.proc.pid!).sort(), [`127.0.0.1:${h.registry!.port}`, `127.0.0.1:${h.registry!.wsPort}`].sort(), "the host has only its loopback ports");
+    assert.deepEqual(listening(r.proc.pid!), [`127.0.0.1:${r.port}`], "the relay listens on loopback only");
+    const reg = JSON.parse(readFileSync(join(shared, "state", "chats", `${h.chat}.json`), "utf8"));
+    assert.equal(reg.socket, join(shared, "state", "chats", `${h.chat}.sock`));
   } finally {
     ws.ws.close();
     r.proc.kill("SIGKILL");
