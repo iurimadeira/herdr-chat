@@ -50,8 +50,10 @@ The host writes `<stateDir>/chats/<chat>.json` with mode 0600:
 ```json
 { "v": 1, "chat": "c-1a2b3c4d", "pid": 4242, "port": 51234, "wsPort": 51235, "token": "<64 hex>",
   "cwd": "/abs/dir", "sessionFile": "/abs/x.jsonl" | null, "terminal": "t7" | null,
-  "startedAt": 1793700000000, "agentVersion": "1.5.0" | null }
+  "startedAt": 1793700000000, "agentVersion": "1.5.0" | null, "socket": "/abs/<chat>.sock" | null }
 ```
+
+`socket` is the host's Unix socket (v3.8, "Remote chats").
 
 - `stateDir` is passed on the host command line (`--state-dir`). The mod uses
   `appHome() + "/data/herdr-chat"`.
@@ -633,3 +635,78 @@ The mod shows the plan as a strip above the composer (`2/5`, a progress bar, the
 - The mod draws each thumbnail at that aspect ratio from the first frame (`cards.js` `images()`), within 320 × 320 points and 60 % of the column, never enlarged. A row with images then has its final height when it first appears, so the rows above it never jump. The size also goes to the viewer when a thumbnail is enlarged.
 - The composer's images carry theirs too: `clipboard_image` and `attach_image` answer `{path, size}`, the size read from the attachment's bytes. A chip keeps its fixed 64 × 48 box (the composer's height doesn't wait on the host's answer), so its size only goes to the viewer when the chip is enlarged. A message sent with chips gets sizes as any user item does, from the images the host saved for it.
 - The mod can't read raster files itself (the manifest grants no `fs.read`). An image without a size (a `null`, or a host older than v3.7) gets a 16:10 box as wide as a thumbnail may be, and the viewer opens it at a 1600 × 1000 guess. SVGs (mermaid blocks) are still sized by the mod, from the file's `viewBox`.
+
+## v3.8: remote chats, the relay and the bridge (additive)
+
+A chat can run on another machine that herdr-core links to (`hc machine add`). Its host then runs there, and no port opens on that machine for it: the chat's records cross core's machine link inside a terminal's PTY. Local chats are unchanged.
+
+```
+mod ──WebSocket 127.0.0.1──▶ relay ──hc connect (framed)──▶ core ══machine link══▶ core on <m>
+                                                                              │ terminal (PTY)
+                                                                              ▼
+                                         host ◀──Unix socket 0600── bridge <chat>
+```
+
+### The host's Unix socket
+
+- The host also serves its records on `<stateDir>/chats/<chat>.sock`, mode 0600 in a 0700 directory, as JSONL exactly like the TCP port (`hello` first, then records; no keepalive pings). It does this for every chat, in addition to the two loopback ports, which stay as they are.
+- The registry records it: `"socket": "<abs path>" | null`. It is `null` until the socket listens, when it can't listen (the host logs why, and serves TCP and WebSocket only), and after a clean exit. On exit the host removes the socket file.
+
+### `herdr-chat-host relay --machine <m>`
+
+Runs where the Herdr app runs, one per linked machine. It gives the mod the same WebSocket a local host gives it, on `127.0.0.1` only.
+
+```
+herdr-chat-host relay --machine <m> [--state-dir D] [--host CMD] [--node PATH]
+                      [--remote-state-dir R] [--hc PATH] [--ping-ms N] [--dead-ms N]
+```
+
+- `--machine`: core's name for the machine (`[\w.-]+`).
+- `--state-dir`: the local state dir (the mod's `appHome() + "/data/herdr-chat"`). The relay writes `relays/<m>.json` (0600, atomic) and logs to `relays/<m>.log`.
+- `--host`: the `herdr-chat-host` command on the machine (default `herdr-chat-host`). `--node`: `HERDR_CHAT_NODE` for it there.
+- `--remote-state-dir`: the hosts' state dir on the machine, relative to its home (default `.local/state/herdr-chat`).
+- `--hc`: the `hc` binary (default `$HERDR_CHAT_HC`, else `hc`). The relay reaches core with `hc connect`, so it uses whatever session `hc` uses (`HC_SESSION`).
+- `--ping-ms` (5000) and `--dead-ms` (20000): the link's ping interval and silence limit.
+- `HERDR_CHAT_RELAY_SETUP_MS` (20000): how long a connection's setup may take.
+- SIGTERM, SIGINT and SIGHUP close every connection (1001), rewrite the registry with `pid: null, wsPort: null`, and exit.
+
+The relay registry:
+
+```json
+{ "v": 1, "machine": "lab", "pid": 4242, "wsPort": 51235, "startedAt": 1793700000000, "version": "0.9.0", "build": "<hash>" }
+```
+
+The mod connects to `wsPort` as it does to a host's, with one more field in `hello`: `"chat": "<chat id>"`. Then, per WebSocket connection:
+
+1. `hello` within 5 s, with `chat` and `token`; else close 4003 (`a bad hello`, `no hello`).
+2. The relay opens its own `hc connect` and reads `<remote-state-dir>/chats/<chat>.json` on the machine (`file.read`). A wrong token (compared in constant time) closes 4003, before anything runs on the machine. So does an entry with no `pid` or no `socket`.
+3. It runs `herdr-chat-host bridge <chat> --state-dir <remote-state-dir> --ping-ms … --dead-ms …` there (`terminal.run`, with `no_parent`, `no_notify`, `rm`, labels `herdr-chat.chat=<chat>` and `herdr-chat.role=bridge`), attaches its terminal, and syncs (below).
+4. It forwards the mod's `hello`, and from then on carries records both ways. The mod's `{"t":"ack"}` stays with the relay: the relay keeps the host's ack window towards the mod (at most 4 messages unacknowledged, as a host does), and a JSONL socket needs no acks.
+5. When the WebSocket closes, the relay kills the bridge's terminal and closes its core link.
+
+Close codes: `4003` refused (bad hello, wrong token, host not serving), `4001` resync (the link broke, the bridge ended, core went away, or the bridge stopped reading for 64 MiB), `1011` setup failed or timed out, `1001` relay stopping. The mod treats all of them like any drop: it reconnects and starts again from the snapshot that follows `welcome`, through a new bridge. Records never resume in the middle; a snapshot replaces them, so a resync loses or repeats no turn.
+
+A relay that dies leaves the host and its agent running; the bridge it started stops getting pings and exits after `--dead-ms`. A new relay serves new connections; it doesn't adopt old bridges.
+
+### `herdr-chat-host bridge <chat>`
+
+Runs on the chat's machine, in the terminal the relay starts; nobody else needs to run it.
+
+- `--state-dir` relative to `$HOME`. It logs to `<stateDir>/chats/<chat>.bridge.log`.
+- It sets its PTY raw (`stty raw -echo`; exit 2 if it can't), prints the READY line, then waits for SYNC.
+- After SYNC it reads the registry and connects to the host's socket (exit 4 if there's none, 5 on a socket error), prints SYNCED, and carries records: the host's JSONL lines onto the link, the link's records onto the socket.
+- It exits when the host's socket closes (0), when the link breaks (6) or goes silent for `--dead-ms` (6), or when its terminal's input ends (0).
+- Flow control: it stops reading the socket while more than 4 MiB of records wait for the link's window, and holds its acks while more than 4 MiB wait to be written to the socket.
+
+### The link (`host/relaylink.ts`)
+
+A PTY is not a clean pipe: core may inject a repaint (it starts with `\x18\x1b[!p`) after its machine link drops or when a viewer falls more than ~4 MiB behind; a line may be lost; someone may type into the terminal. So:
+
+- Every line is one JSON object in printable ASCII (`0x20`–`0x7e`) ended by `\n`, at most 512 KiB.
+- Handshake (no `s`): the bridge prints `{"t":"ready","v":1}`. The relay, once it sees it, sends `{"t":"sync","n":"<nonce>"}`; the bridge answers `{"t":"synced","n":"<nonce>"}`. Anything before SYNC (on the bridge) or before SYNCED (on the relay) is ignored: it is the terminal's, not the link's.
+- After SYNCED, every line carries `s`: 1, 2, 3… per direction.
+  - Data: `{"s":N,"d":"<base64>"}`. A record (one JSONL line of the chat protocol, UTF-8, without its `\n`) goes in chunks of at most 192 KiB before base64; all but the last chunk carry `"c":1`. A record is at most 8 MiB.
+  - Ack: `{"s":N,"t":"ack","n":<bytes>}`, the cumulative bytes of data lines received (each line with its `\n`). Sent every 64 KiB and at each record's end, and only while the receiver's consumer keeps up (the relay's WebSocket has at most 1 MiB waiting; the bridge's socket at most 4 MiB).
+  - Ping: `{"s":N,"t":"ping"}`, when nothing else went out for `--ping-ms`.
+- A sender keeps at most 1 MiB of data lines unacknowledged, well under core's ~4 MiB.
+- Any other byte, a line that isn't JSON or has the wrong keys, a sequence gap, an ack beyond what was sent, bad base64, or no line for `--dead-ms` breaks the link. The bridge exits; the relay closes the WebSocket with 4001.

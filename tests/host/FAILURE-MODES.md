@@ -237,3 +237,20 @@ A chat whose host started before an install runs older code (protocol.md v3.5).
 | A line bigger than one read (a 1.5 MiB brief inlined in the first message, 3 MB of tool output) loses the first message or miscounts | that session: `@/tmp/big.md summarise it`, 3 messages (tool output isn't one) |
 | A rename, a deleted session or a new one doesn't show | after `refresh`: the new name, the file gone, the new one first; without `refresh`, what was read before (protocol) |
 | `pi @brief.md` rows show the brief | `@/tmp/review/brief.task.md go` |
+
+## Remote chats: relay and bridge (core's machine link)
+
+Two private hc sessions (A and B) linked with `hc machine add --via` (`hcrig.ts`); skipped with the reason when `hc` can't run.
+
+| Failure | Test |
+|---|---|
+| The Unix socket is readable by others, or left behind after exit | `socket.test.ts`: mode 0600, welcome and snapshot, a send, a wrong token gets nothing, the file gone after exit |
+| Unicode, control characters or a 1 MiB record changes on the way | `relay.test.ts` "round-trip byte for byte": relayed records deepEqual the TCP client's, and the agent got the prompt byte for byte |
+| A wrong token, or a hello without `chat`, gets records or starts a bridge | `relay.test.ts` "a wrong token": 4003, nothing received, no "starting a bridge" in the log, no bridge terminal |
+| A mod that stops reading lets the stream run more than ~4 MiB ahead (core repaints) | `relay.test.ts` "a burst over 4 MiB": 18 turns held, at most the window delivered, all intact after, then a 4 MiB+ snapshot |
+| An injected byte, a lost line or garbage on the PTY is taken as data | `relaylink.test.ts` "a control byte, a lost line or garbage breaks it" |
+| The machine link drops mid-stream: lost or repeated turns | `relay.test.ts` "held down mid-stream": core's repaint breaks the link, 4001, the chat goes on, a reconnect's snapshot has every turn once; "killed and back at once": intact or resynced |
+| Killing the relay kills the host or agent, or strands the bridge | `relay.test.ts` "killing the relay": the bridge exits within `--dead-ms`, the same agent, a new relay serves the chat |
+| A port opens on the chat's machine, or the relay listens beyond loopback | `relay.test.ts` "no TCP port": `ss -ltnp` per pid |
+| A key typed into the bridge's terminal | not covered end to end: `hc keys` on a terminal carrying megabyte lines stalled in core and never delivered the key; the byte check itself is in `relaylink.test.ts` |
+| The relay's queued-bytes count drifts (it went negative before) | `relaylink.test.ts` "at most a window": `queued()` is 0 after everything is sent |
