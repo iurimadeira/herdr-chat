@@ -36,13 +36,15 @@ const CHOICES = [
 ];
 const PREFS = () => `${appHome()}/data/herdr-chat/launcher.json`;
 
-/** A chat with `provider` in a new tab, in the focused terminal's folder (else the space's). */
+/** A chat with `provider` in a new tab, in the focused terminal's folder (else the space's); a remote space's on its machine. */
 async function openChat(provider) {
   const f = focused();
   const space = spaces().find((s) => s.id === f?.space);
   const cwd = f?.cwd || space?.folder || null;
   const chat = `c-${randomBytes(4).toString("hex")}`;
-  run("tab.new", { name: provider, mod: "chat", props: { chat, provider, ...(cwd ? { cwd } : {}) } });
+  // A remote space's chat runs its host on that machine (chat/remote.js); `cwd` is a path there.
+  const machine = space?.machine ?? null;
+  run("tab.new", { name: provider, mod: "chat", props: { chat, provider, ...(cwd ? { cwd } : {}), ...(machine ? { machine } : {}) } });
   await fs.mkdir(`${appHome()}/data/herdr-chat`, { recursive: true });
   await fs.writeFile(PREFS(), JSON.stringify({ last: provider }));
 }
@@ -261,6 +263,8 @@ export default class NewChat extends View {
     });
     cx.spawn(async (cx) => {
       try {
+        // knownAgents() is this Mac's: a remote space's chat runs the agent on its machine, so every one is offered.
+        if (spaces().find((s) => s.id === focused()?.space)?.machine) return;
         const known = await knownAgents();
         this.installed = Object.fromEntries(CHOICES.map((c) => [c.id, known.find((a) => a.key === c.id)?.installed !== false]));
       } catch {}

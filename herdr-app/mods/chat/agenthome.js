@@ -33,7 +33,7 @@ export function carriedHome(state, prop) {
 }
 
 /** A new chat tab's props. */
-export function newChatProps({ chat, provider, cwd, session, hostEnv, agentHome }) {
+export function newChatProps({ chat, provider, cwd, session, hostEnv, agentHome, machine }) {
   return { chat, provider, ...(cwd ? { cwd } : {}), ...(session ? { session } : {}), ...(hostEnv ? { hostEnv } : {}),
-    ...(agentHome !== undefined ? { agentHome } : {}) };
+    ...(agentHome !== undefined ? { agentHome } : {}), ...(machine ? { machine } : {}) };
 }

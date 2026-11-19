@@ -41,6 +41,9 @@ test("new chat: carries the source chat's home (the host's state, else its prop)
   assert.deepEqual(newChatProps({ ...base, agentHome: "/h/alt" }), { ...base, agentHome: "/h/alt" });
   assert.deepEqual(newChatProps({ ...base, session: "/s.jsonl", agentHome: "" }), { ...base, session: "/s.jsonl", agentHome: "" });
   assert.deepEqual(newChatProps({ ...base, session: null, hostEnv: null, agentHome: undefined }), base);
+  // A remote space's chat: its new chat and /resume of another folder stay on its machine.
+  assert.deepEqual(newChatProps({ ...base, machine: "lab" }), { ...base, machine: "lab" });
+  assert.deepEqual(newChatProps({ ...base, machine: null }), base);
 });
 
 test("Continue as chat: a sub-agent's launcher and a top-level chat's pane get the TUI's home", () => {

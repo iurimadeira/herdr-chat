@@ -35,6 +35,7 @@ import { getDoc, hideHost, locate } from "./hostpane.js";
 import { SHORTCUTS, actionName, errors as keyErrors, keyHint, loadShortcuts, shortcuts, withKey } from "./shortcuts.js";
 import { keepKeys } from "./keymap.js";
 import { Connection, hostTerminal, readConfig, runsHost } from "./connection.js";
+import { onMachine } from "./remote.js";
 import { carriedHome, handoffArgv, newChatProps } from "./agenthome.js";
 import { Store } from "./store.js";
 import { Timeline } from "./timeline.js";
@@ -86,6 +87,9 @@ export default class HerdrChat extends View {
     this.peekMode = Boolean(p.peek);
     this.provider = p.provider ?? null; // an id of PROVIDERS; null: the registry's, else DEFAULT_PROVIDER
     this.cwd = p.cwd || null;
+    // A remote space's chat (chat/remote.js): its host runs on that machine, reached through this
+    // Mac's relay; `cwd` is a path there. The app never hides, heals, updates or sweeps that host.
+    this.machine = p.machine || null;
     this.store = new Store();
     this.timeline = new Timeline("herdr-chat-timeline");
     this.expanded = new Set();
@@ -141,7 +145,9 @@ export default class HerdrChat extends View {
     });
     this.conn = new Connection({
       chat: this.chat,
-      cwd: this.cwd ?? home(),
+      machine: this.machine,
+      // (A remote chat without a folder: the machine's home, not this Mac's.)
+      cwd: this.cwd ?? (this.machine ? null : home()),
       session: p.session ?? null,
       provider: this.provider,
       hostEnv: p.hostEnv ?? null,
@@ -157,7 +163,7 @@ export default class HerdrChat extends View {
       log: (m) => this.log(m),
     });
     if (!this.cwd) this.cwd = p.cwd ?? null;
-    this.updater = new Updater({ sub: Boolean(this.sub), log: (m) => this.log(m) }); // a host older than the install (update.js)
+    this.updater = new Updater({ sub: Boolean(this.sub || this.machine), log: (m) => this.log(m) }); // a host older than the install (update.js)
     cx.spawn(async (cx) => { await this.updater.load(); this.debug.mark(); cx.notify(); });
     this.conn.start(cx);
     this.commands(cx);
@@ -236,7 +242,7 @@ export default class HerdrChat extends View {
   // No layout document (no hc on PATH?): the host's tab label, else the only chat pane.
   guessPlace() {
     const mine = panes().filter((p) => p.mod === MOD);
-    const hostTab = hostTerminal(this.chat)?.labels?.["herdr.tab"];
+    const hostTab = hostTerminal(this.chat, this.machine)?.labels?.["herdr.tab"];
     const pane = (hostTab && mine.find((p) => p.tab === hostTab)) || (mine.length === 1 ? mine[0] : null);
     if (!pane || String(pane.tab).includes("/")) return;
     const space = spaces().find((sp) => sp.tabs.some((x) => x.id === pane.tab))?.id;
@@ -281,7 +287,7 @@ export default class HerdrChat extends View {
   }
 
   hostPane() {
-    const term = hostTerminal(this.chat);
+    const term = hostTerminal(this.chat, this.machine);
     return term ? panes().find((p) => p.terminal === term.address) ?? null : null;
   }
 
@@ -334,12 +340,12 @@ export default class HerdrChat extends View {
     // Layout moves only while this tab is the shown one: a chat in a
     // background tab must never pull the person over to it.
     const shown = Boolean(me) && focused()?.tab === me.tab;
-    if (!this.sub) {
+    if (!this.sub && !this.machine) {
       if (this.healHost(cx)) changed = true;
       if (this.updateTick(cx)) changed = true;
       this.keepHostHidden(me, cx);
-      if (this.redirectFocus(cx)) changed = true;
     }
+    if (!this.sub && this.redirectFocus(cx)) changed = true;
     if (shown) this.markSeen(me, cx);
     if (this.sub && this.subKey() !== this.lastSubKey) { this.lastSubKey = this.subKey(); changed = true; } // the header bar
     // The hand-off's terminal (in its dialog): finished, back to the chat (the
@@ -423,7 +429,7 @@ export default class HerdrChat extends View {
       this.conn.restart();
       this.log(`the old host ${hl.terminal} ended: starting its replacement`);
     }
-    const term = hostTerminal(this.chat);
+    const term = hostTerminal(this.chat, this.machine);
     if (term?.parent) return false; // a sub-agent is its parent's: never restarted from here
     const label = term?.labels?.["herdr.tab"];
     const docTab = this.hide?.terminal === term?.address ? this.hide?.tab : null;
@@ -455,7 +461,7 @@ export default class HerdrChat extends View {
   // A host older than the install (update.js): restart it once the person asked and the chat is quiet.
   updateTick(cx) {
     if (this.conn.status !== "connected" || !this.store.loaded) return false;
-    const host = hostTerminal(this.chat);
+    const host = hostTerminal(this.chat, this.machine);
     if (!this.updater.due({ welcome: this.conn.welcome, state: this.store.state, host, replacing: this.replacing() })) return false;
     this.replaceHost(host, "update", cx);
     return true;
@@ -471,7 +477,7 @@ export default class HerdrChat extends View {
   // the tab shows (30 s when it doesn't), and written only when the tab is quiet. If the flag can't be written or
   // doesn't stick, the pane is resized to 0 px instead (fallbackHide).
   keepHostHidden(me, cx) {
-    const term = hostTerminal(this.chat);
+    const term = hostTerminal(this.chat, this.machine);
     if (!me || !term || this.placeFrom !== "doc" || !this.place) return;
     let h = this.hide;
     if (h?.terminal !== term.address) {
@@ -641,7 +647,7 @@ export default class HerdrChat extends View {
   // shown), the host's turn is labeled seen (herdr.seen, shared by every
   // client), so "done" becomes "idle" as for any agent you look at.
   markSeen(me, cx) {
-    const term = hostTerminal(this.chat);
+    const term = hostTerminal(this.chat, this.machine);
     if (!term || term.turn == null || !appWindow()?.active || focused()?.tab !== me.tab) return;
     const key = `${term.address}:${term.turn}`;
     if (String(term.labels?.["herdr.seen"] ?? "") === String(term.turn) || this.seenSent === key) return;
@@ -668,7 +674,8 @@ export default class HerdrChat extends View {
       const missing = new Set();
       for (const t of terminals()) {
         const chat = t.labels?.["herdr-chat.chat"];
-        if (t.state !== "live" || !chat) continue;
+        // Only this Mac's: a remote chat's host has no pane here (its tab is the app's, its terminal the machine's).
+        if (t.state !== "live" || !chat || !onMachine(t.address, null)) continue;
         // The shell herdr-core restored in a host's place (connection.js runsHost): nobody's, end it.
         const shell = !runsHost(t);
         // A sub-agent (a parent, or the launcher's role=subagent) has no pane by design: never an orphan.
@@ -681,7 +688,8 @@ export default class HerdrChat extends View {
       this.orphans = missing;
       // The host removes the attachments of chats closed while their host was down (protocol.md
       // "Attachments"). An older host has no sweep_attachments: req logs it.
-      if (this.conn.status === "connected") this.req("sweep_attachments", { open: [...chats] }).catch(() => {});
+      // A remote host's state dir holds that machine's chats, not this document's: never swept from here.
+      if (this.conn.status === "connected" && !this.machine) this.req("sweep_attachments", { open: [...chats] }).catch(() => {});
     });
   }
 
@@ -840,7 +848,7 @@ export default class HerdrChat extends View {
     if (m?.[1] === "reload" && !images.length && this.updater.canRestart(this.conn.welcome)) {
       this.composer.clear();
       this.updater.want();
-      const quietNow = quiet(this.store.state, hostTerminal(this.chat)?.address);
+      const quietNow = quiet(this.store.state, hostTerminal(this.chat, this.machine)?.address);
       return this.flash(quietNow ? `Restarting on ${this.updater.label()}` : `Restarts on ${this.updater.label()} when ${this.providerName()} is done`, cx);
     }
     if (m && !images.length) {
@@ -1161,7 +1169,7 @@ export default class HerdrChat extends View {
     const agentHome = carriedHome(this.store.state, props()?.agentHome);
     this.lastNewChat = chat;
     run("tab.new", { name: provider, ...(place?.space ? { space: place.space } : {}), mod: MOD,
-      props: newChatProps({ chat, provider, cwd, session, hostEnv, agentHome }) });
+      props: newChatProps({ chat, provider, cwd, session, hostEnv, agentHome, machine: this.machine }) });
     this.debug.mark();
   }
 
@@ -1729,7 +1737,7 @@ export default class HerdrChat extends View {
 
   showTranscript(cx) {
     // The host's pane is hidden (a zoom can't show it): a peek over the tab.
-    const term = hostTerminal(this.chat);
+    const term = hostTerminal(this.chat, this.machine);
     if (!term) return this.flash("The chat's host isn't running", cx);
     run("terminal.peek", { terminal: term.address });
     this.transcript = "peek";
@@ -1888,7 +1896,7 @@ export default class HerdrChat extends View {
     if (this.viewer || this.termbar) return;
     owners.delete(this.uid);
     // A sub-agent's host is its parent's: closing its peek or its tab leaves it running.
-    if (this.sub || hostTerminal(this.chat)?.parent) {
+    if (this.sub || hostTerminal(this.chat, this.machine)?.parent) {
       this.conn?.close();
       return;
     }
@@ -1973,7 +1981,7 @@ export default class HerdrChat extends View {
 
   dump() {
     const s = this.store.state;
-    const host = hostTerminal(this.chat);
+    const host = hostTerminal(this.chat, this.machine);
     const me = this.myPane();
     const m = this.composer.menu;
     // Built here too, not taken from the last render: a window that isn't drawn (locked screen) doesn't render.
