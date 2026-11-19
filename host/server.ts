@@ -47,6 +47,8 @@ export class ChatServer implements Sink {
   wss: WebSocketServer | null = null;
   unix: Server | null = null;
   socketPath: string | null = null;
+  /** Why the Unix socket isn't served, when listenUnix failed. */
+  unixError: string | null = null;
   clients = new Set<Client>();
   log: (msg: string) => void;
   port = 0;
@@ -96,6 +98,10 @@ export class ChatServer implements Sink {
    */
   async listenUnix(path: string): Promise<string | null> {
     try {
+      // sockaddr_un holds 104 bytes on macOS, 108 on Linux, with the NUL: a longer path fails with a bare EINVAL.
+      const max = (process.platform === "linux" ? 108 : 104) - 1;
+      const bytes = Buffer.byteLength(path);
+      if (bytes > max) throw new Error(`socket path ${path} is ${bytes} bytes; this system allows at most ${max} (use a shorter --state-dir)`);
       // Only we can enter the directory, so the socket is ours alone between the bind and the
       // chmod (no process-wide umask, which every other thread's file would get too).
       const dir = dirname(path);
@@ -113,7 +119,8 @@ export class ChatServer implements Sink {
       this.socketPath = path;
       return path;
     } catch (e) {
-      this.log(`unix socket ${path}: ${e instanceof Error ? e.message : e}`);
+      this.unixError = e instanceof Error ? e.message : String(e);
+      this.log(`unix socket ${path}: ${this.unixError}`);
       return null;
     }
   }

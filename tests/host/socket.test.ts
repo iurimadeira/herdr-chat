@@ -132,3 +132,19 @@ test("unix socket: serve --socket-only listens on no port at all; a client reach
     await h.stop();
   }
 });
+
+test("unix socket: serve --socket-only with a socket path over the system's limit exits 1 and says why", async () => {
+  const base = mkdtempSync(join(TMP, "pich-longsock-"));
+  // Over macOS's 104 and Linux's 108 bytes whatever the pid: chats/c-test.<pid>.sock is added.
+  const dir = join(base, "d".repeat(Math.max(1, 120 - base.length)));
+  mkdirSync(dir, { recursive: true });
+  const h = new Host({ name: "longsock", speed: 5, socketOnly: true, dir });
+  try {
+    await assert.rejects(h.start(), /host exited early/);
+    assert.equal(await h.exited, 1);
+    assert.match(h.screen, /socket path .* is \d+ bytes; this system allows at most (103|107) \(use a shorter --state-dir\)/);
+  } finally {
+    await h.stop().catch(() => {});
+    rmSync(base, { recursive: true, force: true });
+  }
+});

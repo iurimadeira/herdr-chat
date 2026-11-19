@@ -201,6 +201,7 @@ async function serve(a: Args, extra: { hint?: string; warning?: string | null } 
   const socket = await server.listenUnix(socketPath(stateDir, chatId, process.pid));
   if (socketOnly && !socket) {
     log("--socket-only and no socket: nothing to serve on");
+    process.stderr.write(`herdr-chat-host: --socket-only and no socket: ${server.unixError}\n`);
     return void exit(1);
   }
   save({ ...ports, socket });

@@ -654,7 +654,7 @@ mod ──WebSocket 127.0.0.1──▶ relay ──hc connect (framed)──▶ 
 ### The host's Unix socket
 
 - The host also serves its records on `<stateDir>/chats/<chat>.<pid>.sock` (its own pid), mode 0600 in a 0700 directory, as JSONL exactly like the TCP port (`hello` first, then records; no keepalive pings).
-- A local host serves it in addition to the two loopback ports, which stay as they are. A remote chat's host runs `serve --socket-only`: the socket only, no TCP and no WebSocket port (the registry's `port` and `wsPort` are `null`). With `--socket-only` a host that can't listen on the socket exits 1.
+- A local host serves it in addition to the two loopback ports, which stay as they are. A remote chat's host runs `serve --socket-only`: the socket only, no TCP and no WebSocket port (the registry's `port` and `wsPort` are `null`). With `--socket-only` a host that can't listen on the socket exits 1 and prints why on stderr. A socket path longer than the system allows (103 bytes on macOS, 107 on Linux) is refused before the bind with an error naming the path, its length and the limit; a local host then has no socket and its log says why.
 - The registry records it: `"socket": "<abs path>" | null`. It is `null` until the socket listens, when it can't listen (the host logs why, and serves TCP and WebSocket only), and after a clean exit.
 - Named by pid, so a host never removes another's socket: a new host for the same chat binds its own path, and the old one's exit removes only the old path. On exit a host clears the registry entry only while the entry still names its pid. Before listening, a host removes the sockets of this chat's dead hosts (a SIGKILL leaves one), and only paths that are sockets.
 
