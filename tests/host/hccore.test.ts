@@ -55,3 +55,16 @@ test("hccore: a call core never answers rejects after its timeout", async () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("hccore: an attach core never answers rejects after its timeout and holds nothing", async () => {
+  const { hc, dir } = fake(`read line\necho '{"jsonrpc":"2.0","id":0,"result":{}}'\nexec sleep 30`);
+  try {
+    const c = await CoreClient.open(hc, process.env, 3000);
+    await assert.rejects(c.attach("rb/t1", { timeoutMs: 200 }), /terminal\.attach: no answer in 200 ms/);
+    assert.equal(c.channels, 0);
+    assert.equal(c.closed, false, "the client stays usable");
+    c.end();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

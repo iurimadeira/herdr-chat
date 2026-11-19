@@ -49,10 +49,18 @@ export class Stream {
     }
   }
 
+  /** Detaches: core is told to close the channel, and the stream ends here at once. */
+  close(why = "closed"): void {
+    if (this.closed) return;
+    this.core.frame(this.channel, KIND.CLOSE, Buffer.alloc(0));
+    this.end(why);
+  }
+
   /** @internal */
   end(why: string): void {
     if (this.closed) return;
     this.closed = true;
+    this.core.forget(this);
     this.onClose(why);
   }
 }
@@ -65,7 +73,9 @@ export class CoreClient {
   private id = 0;
   private pending = new Map<number, Pending>();
   private streams = new Map<number, Stream>();
+  /** Frames for a channel an attach's answer hasn't named yet; kept only while an attach is pending. */
   private early = new Map<number, { kind: number; p: Buffer }[]>();
+  private attaching = 0;
 
   private proc: ChildProcessWithoutNullStreams;
   private constructor(proc: ChildProcessWithoutNullStreams) {
@@ -116,13 +126,49 @@ export class CoreClient {
     });
   }
 
-  async attach(terminal: string, cols = 200, rows = 50): Promise<Stream> {
-    const r = await this.call("terminal.attach", { terminal, cols, rows, history: 0 });
-    const s = new Stream(this, r.channel);
-    this.streams.set(r.channel, s);
-    for (const f of this.early.get(r.channel) ?? []) s.frameIn(f.kind, f.p);
-    this.early.delete(r.channel);
-    return s;
+  /**
+   * With `timeoutMs`, rejects when core doesn't answer in time; a channel core names after that is
+   * closed when its answer comes.
+   */
+  async attach(terminal: string, { cols = 200, rows = 50, timeoutMs }: { cols?: number; rows?: number; timeoutMs?: number } = {}): Promise<Stream> {
+    this.attaching++;
+    let late = false;
+    const answer = this.call("terminal.attach", { terminal, cols, rows, history: 0 });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const r = await (timeoutMs === undefined
+        ? answer
+        : Promise.race([
+            answer,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => {
+                late = true;
+                reject(new Error(`terminal.attach: no answer in ${timeoutMs} ms`));
+              }, timeoutMs);
+            }),
+          ]));
+      const s = new Stream(this, r.channel);
+      this.streams.set(r.channel, s);
+      for (const f of this.early.get(r.channel) ?? []) s.frameIn(f.kind, f.p);
+      this.early.delete(r.channel);
+      return s;
+    } finally {
+      clearTimeout(timer);
+      this.attaching--;
+      if (!this.attaching) this.early.clear();
+      // Given up on: the channel core names later is nobody's.
+      if (late) answer.then((r) => this.frame(r.channel, KIND.CLOSE, Buffer.alloc(0)), () => {});
+    }
+  }
+
+  /** Open streams, and channels with frames held for a pending attach. */
+  get channels(): number {
+    return this.streams.size + this.early.size;
+  }
+
+  /** @internal */
+  forget(s: Stream): void {
+    if (this.streams.get(s.channel) === s) this.streams.delete(s.channel);
   }
 
   end(): void {
@@ -145,7 +191,7 @@ export class CoreClient {
     this.closed = true;
     for (const [, p] of this.pending) p.reject(new Error(why));
     this.pending.clear();
-    for (const [, s] of this.streams) s.end(why);
+    for (const s of [...this.streams.values()]) s.end(why);
     this.onClose(why);
   }
 
@@ -189,7 +235,8 @@ export class CoreClient {
       }
       const s = this.streams.get(ch);
       if (s) s.frameIn(kind, p);
-      else this.early.set(ch, [...(this.early.get(ch) ?? []), { kind, p }]);
+      // A frame may come before its attach's answer; any other is a closed stream's late one.
+      else if (this.attaching) this.early.set(ch, [...(this.early.get(ch) ?? []), { kind, p }]);
     }
   }
 }
