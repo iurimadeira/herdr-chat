@@ -51,6 +51,8 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
     drained?.();
   };
   const out = (s: string): void => {
+    // Exiting: what is queued drains, nothing new joins it.
+    if (exiting) return;
     pending.push(Buffer.from(s, "latin1"));
     if (!waiting) flush();
   };
