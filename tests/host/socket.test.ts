@@ -4,10 +4,9 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { ChatClient } from "../../host/client.ts";
 import { dirname, join } from "node:path";
-import { startHost, idle, sleep, Host } from "./harness.ts";
+import { startHost, idle, sleep, Host, TMP } from "./harness.ts";
 import { LineFramer } from "../../host/framing.ts";
 
 type Rec = Record<string, any>;
@@ -80,7 +79,7 @@ const listening = (pid: number): string[] => {
 };
 
 test("unix socket: a new host removes only dead hosts' sockets, never a live one's or a non-socket, and stopping one host leaves the other's", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "unix-two-"));
+  const dir = mkdtempSync(join(TMP, "unix-two-"));
   const chats = join(dir, "state", "chats");
   mkdirSync(chats, { recursive: true, mode: 0o700 });
   const chat = "c-two";

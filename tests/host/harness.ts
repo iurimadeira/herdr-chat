@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import { ChatClient } from "../../host/client.ts";
 import { readRegistry } from "../../host/registry.ts";
 
+// macOS caps a Unix socket path at 104 bytes and its tmpdir() alone is ~50.
+export const TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
+
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const FAKE_PI = join(ROOT, "tests", "fake-pi", "fake-pi.mjs");
 export const SCENARIOS = join(ROOT, "tests", "fake-pi", "scenarios");
@@ -70,7 +73,7 @@ export class Host {
 
   constructor(opts: HostOptions) {
     this.opts = opts;
-    this.dir = opts.dir ?? realpathSync(mkdtempSync(join(tmpdir(), `pich-${opts.name}-`)));
+    this.dir = opts.dir ?? realpathSync(mkdtempSync(join(TMP, `pich-${opts.name}-`)));
     this.cwd = opts.cwd ?? join(this.dir, "cwd");
     this.stateDir = join(this.dir, "state");
     this.chat = opts.chat ?? "c-test";
