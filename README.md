@@ -181,8 +181,12 @@ goes to the machine: its `env` and per-agent settings stay this Mac's.
 ## Limitations
 
 - **The app is macOS only.** A remote space's chat runs its host on the
-  space's machine (above), but these still run on the Mac: `/tui`, `/login`,
-  opening a file and pasting an image.
+  space's machine (above). Some of its commands don't know that yet:
+  `/tui` and `/login` start a terminal on the Mac in the chat's folder (a
+  path on the machine, so they usually fail); opening a file opens the Mac's
+  editor on that path; pasting an image asks the host there, which reads the
+  clipboard with `osascript` (so off a Mac it fails), and a dropped one is a
+  Mac path the machine can't read.
 - **A remote chat's host keeps running after its tab closes.** End it on
   that machine (`hc ls --label herdr-chat.role=host`).
 - **Run the install again after a Herdr update.** The agents list and the

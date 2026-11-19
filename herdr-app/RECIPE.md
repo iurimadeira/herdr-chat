@@ -140,8 +140,9 @@ install changed, and removes the unpacked release.
 - Continue as chat is Pi only.
 - A chat in a space on another machine runs its host there (`--host-only`
   install, `machines.<name>` in settings.json), reached through this Mac's
-  relay. `/tui`, `/login`, files and images still run here, and its host is
-  not ended when the tab closes.
+  relay. `/tui`, `/login`, opening files and attaching images aren't
+  remote-aware yet (README "Limitations"), and its host is not ended when
+  the tab closes.
 - The app is macOS only.
 
 ## Done when
