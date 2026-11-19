@@ -167,3 +167,17 @@ export function chatHost(t, chat, machine) {
   return t.labels?.["herdr-chat.chat"] === chat && (role === "host" || role === "subagent")
     && t.state === "live" && onMachine(t.address, machine) && runsHost(t);
 }
+
+/** How long a just-started host may take to show up before its chat starts another (or fails). */
+export const HOST_START_MS = 8000;
+
+/**
+ * What a chat with no host answering does next. `once` (a remote chat): a host it started that
+ * died before it answered is not started again ("failed", until Retry): `hc run --on` returns 0
+ * whether or not the host lives, and each start leaves a kept terminal on the machine.
+ */
+export function hostStep({ live, startedAt, now, autoStart, once }) {
+  if (live || now - startedAt < HOST_START_MS) return "wait";
+  if (!autoStart) return "stopped";
+  return once && startedAt ? "failed" : "start";
+}

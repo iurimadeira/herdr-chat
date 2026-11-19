@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   machineConfig, remoteRegistryPath, remoteEntry, remoteHostArgs, relayStartArgs, relayStart, relayEntry,
-  relayHello, closeAction, onMachine, chatHost, RELAY_ALREADY_SERVES,
+  relayHello, closeAction, onMachine, chatHost, hostStep, HOST_START_MS, RELAY_ALREADY_SERVES,
 } from "../../herdr-app/mods/chat/remote.js";
 import { RELAY_ALREADY_SERVES as HOST_ALREADY_SERVES } from "../../host/relaylock.ts";
 import { CLOSE_RESYNC, CLOSE_REFUSED, CLOSE_NO_HOST, CLOSE_SETUP, CLOSE_BUSY, CLOSE_STOPPING } from "../../host/relay.ts";
@@ -154,4 +154,20 @@ test("the chat's host terminal: live, running the host, labeled host or sub-agen
   assert.equal(chatHost(t("t1", host, { state: "exited" }), "c-1", null), false);
   assert.equal(chatHost(t("t1", host, { argv: ["/bin/zsh", "-l"] }), "c-1", null), false, "the shell core restored in its place");
   assert.equal(chatHost(t("t1", host, { argv: undefined }), "c-1", null), true, "a terminal whose argv isn't known");
+});
+
+test("a host start: wait while one runs or just started; one start per Retry for a remote chat", () => {
+  const now = 100_000;
+  // Nothing started yet: start one.
+  assert.equal(hostStep({ live: false, startedAt: 0, now, autoStart: true, once: true }), "start");
+  // A live host, or one started under HOST_START_MS ago: wait for its socket.
+  assert.equal(hostStep({ live: true, startedAt: now - 60_000, now, autoStart: true, once: true }), "wait");
+  assert.equal(hostStep({ live: false, startedAt: now - HOST_START_MS + 1, now, autoStart: true, once: true }), "wait");
+  // A remote host that died before it answered: failed until Retry, never started again.
+  assert.equal(hostStep({ live: false, startedAt: now - HOST_START_MS, now, autoStart: true, once: true }), "failed");
+  // A local chat starts it again (its pane heals it), as before.
+  assert.equal(hostStep({ live: false, startedAt: now - HOST_START_MS, now, autoStart: true, once: false }), "start");
+  // A host that answered and went away: stopped.
+  assert.equal(hostStep({ live: false, startedAt: now - HOST_START_MS, now, autoStart: false, once: true }), "stopped");
+  assert.equal(hostStep({ live: false, startedAt: 0, now, autoStart: false, once: false }), "stopped");
 });

@@ -3,7 +3,7 @@ import { openLink } from "./transport.js";
 import { DEFAULT_PROVIDER, MOD, message } from "./util.js";
 import { agentHomeArgs, chatHome } from "./agenthome.js";
 import {
-  chatHost, closeAction, machineConfig, relayEntry, relayHello, relayStart, relayStartArgs, remoteEntry, remoteHostArgs, remoteRegistryPath,
+  chatHost, closeAction, hostStep, machineConfig, relayEntry, relayHello, relayStart, relayStartArgs, remoteEntry, remoteHostArgs, remoteRegistryPath,
 } from "./remote.js";
 
 export const stateDir = () => `${appHome()}/data/herdr-chat`;
@@ -223,11 +223,14 @@ export class Connection {
       return null;
     }
     this.machine = machine;
-    let text = null;
+    let text;
     try {
+      // null: no entry (no host started yet). A throw: the machine is unreachable, not hostless.
       text = await readTextFile(remoteRegistryPath(machine, this.o.chat), { on: machine.name });
     } catch (e) {
       this.o.log?.(`read the registry on ${machine.name}: ${message(e)}`);
+      this.set(this.connects ? "reconnecting" : "connecting", `can't reach ${machine.name}: ${message(e)}`, cx);
+      return null;
     }
     const entry = remoteEntry(text, this.o.chat);
     if (!entry?.pid) {
@@ -280,12 +283,18 @@ export class Connection {
     }
     // A start that failed stays failed (its error shown) until Retry (restart).
     if (this.startFailed) return;
-    if (live || Date.now() - this.startedHostAt < 8000) {
+    const step = hostStep({ live: Boolean(live), startedAt: this.startedHostAt, now: Date.now(), autoStart: this.autoStart, once: remote });
+    if (step === "wait") {
       this.set(this.connects ? "reconnecting" : "starting", null, cx);
       return;
     }
-    if (!this.autoStart) {
+    if (step === "stopped") {
       this.set("stopped", "The chat's host stopped", cx);
+      return;
+    }
+    if (step === "failed") {
+      this.startFailed = true;
+      this.set("failed", `${this.o.machine}: the chat's host exited before it answered (its terminal is kept there)`, cx);
       return;
     }
     // A remote chat's host starts without its tab's place: it gets no hidden pane in the app.
