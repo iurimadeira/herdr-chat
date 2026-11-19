@@ -8,7 +8,7 @@
 // attached → READY, SYNC/SYNCED → the hello forwarded, then records both ways. Anything wrong on the
 // link closes the WebSocket (code 4001): the mod reconnects as after any drop and starts again from
 // a snapshot, through a new bridge. One core client serves every connection.
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
@@ -16,7 +16,8 @@ import type { WebSocket } from "ws";
 import { MAX_RECORD_BYTES } from "./framing.ts";
 import { CoreClient, CoreError } from "./hccore.ts";
 import type { Stream } from "./hccore.ts";
-import { atomicWrite, pidAlive } from "./registry.ts";
+import { atomicWrite } from "./registry.ts";
+import { MachineLock } from "./relaylock.ts";
 import { tokenMatches, wsPeer, WS_ACK } from "./peer.ts";
 import { Link, LINK_WINDOW, NOHOST_LINE, READY_LINE, syncLine, syncedLine } from "./relaylink.ts";
 import type { LinkTimes } from "./relaylink.ts";
@@ -72,10 +73,6 @@ export function relayPath(stateDir: string, machine: string): string {
   return join(stateDir, "relays", `${machine}.json`);
 }
 
-export function relayLockPath(stateDir: string, machine: string): string {
-  return join(stateDir, "relays", `${machine}.lock`);
-}
-
 /** The bridge printed NOHOST: no host serves the chat. */
 class NoHost extends Error {}
 
@@ -88,15 +85,16 @@ export class Relay {
   private core: CoreClient | null = null;
   private opening: Promise<CoreClient> | null = null;
   private kills = new Set<Promise<unknown>>();
-  private locked = false;
+  private lock: MachineLock;
 
   constructor(o: RelayOptions) {
     this.o = o;
+    this.lock = new MachineLock(o.stateDir, o.machine);
   }
 
   /** Takes the machine's lock (one relay per machine; a dead holder's lock is taken over), then listens. */
   async listen(): Promise<number> {
-    this.lock();
+    this.lock.take();
     const wss = new WebSocketServer({
       host: "127.0.0.1", port: 0, maxPayload: MAX_RECORD_BYTES, perMessageDeflate: false,
       verifyClient: (info: { origin?: string }) => !info.origin,
@@ -113,28 +111,6 @@ export class Relay {
     return this.wsPort;
   }
 
-  private lock(): void {
-    const path = relayLockPath(this.o.stateDir, this.o.machine);
-    mkdirSync(join(this.o.stateDir, "relays"), { recursive: true, mode: 0o700 });
-    for (let tries = 0; ; tries++) {
-      try {
-        const fd = openSync(path, "wx", 0o600);
-        writeSync(fd, `${process.pid}\n`);
-        closeSync(fd);
-        this.locked = true;
-        return;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST" || tries > 2) throw e;
-      }
-      const holder = Number(readFileSync(path, "utf8").trim()) || 0;
-      if (holder && holder !== process.pid && pidAlive(holder)) throw new Error(`relay pid ${holder} already serves machine ${this.o.machine}`);
-      // Its holder died (SIGKILL): the lock and the entry are stale.
-      try {
-        unlinkSync(path);
-      } catch {}
-    }
-  }
-
   save(pid: number | null, wsPort: number | null): void {
     const b = hostBuild();
     const entry: RelayEntry = { v: 1, machine: this.o.machine, pid, wsPort, startedAt: Math.round(performance.timeOrigin), version: b.version, build: b.build };
@@ -148,21 +124,9 @@ export class Relay {
     // The bridges' kills go out before the core link does.
     await Promise.allSettled([...this.kills]);
     this.core?.end();
-    if (this.locked) {
-      // Only what is ours: another relay may hold the machine by now.
-      const path = relayLockPath(this.o.stateDir, this.o.machine);
-      let holder = 0;
-      try {
-        holder = Number(readFileSync(path, "utf8").trim()) || 0;
-      } catch {}
-      if (holder === process.pid) {
-        this.save(null, null);
-        try {
-          unlinkSync(path);
-        } catch {}
-      }
-      this.locked = false;
-    }
+    // Only what is ours: another relay may hold the machine by now.
+    if (this.lock.held()) this.save(null, null);
+    this.lock.release();
   }
 
   /** The relay's one core client, opened on first use and again after it closes. */
@@ -199,13 +163,24 @@ export class Relay {
     let bridge: string | null = null;
     let link: Link | null = null;
     let tag = "?";
+    // The connection's setup slot, held from its hello until it syncs or ends, whichever comes first:
+    // a core call that never answers can't keep it.
+    let slot = false;
+    const freeSlot = (): void => {
+      if (slot) this.setups--;
+      slot = false;
+    };
+    // The bridge's stream: ending the connection closes it (a sync waiting on it gives up).
+    let attached: Stream | null = null;
     const end = (code: number, why: string): void => {
       if (ended) return;
       ended = true;
+      freeSlot();
       this.sessions.delete(stop);
       o.log(`${tag}: ${why}`);
       clearTimeout(helloTimer);
       link?.stop();
+      attached?.close(why);
       if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(code, REASON[code] ?? "");
       release();
     };
@@ -238,11 +213,8 @@ export class Relay {
         clearTimeout(helloTimer);
         if (this.setups >= MAX_SETUPS) return end(CLOSE_BUSY, `busy: ${this.setups} connections setting up`);
         this.setups++;
-        void setup(text)
-          .catch((e) => end(e instanceof NoHost ? CLOSE_NO_HOST : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`))
-          .finally(() => {
-            this.setups--;
-          });
+        slot = true;
+        void setup(text).catch((e) => end(e instanceof NoHost ? CLOSE_NO_HOST : CLOSE_SETUP, `setup: ${e instanceof Error ? e.message : e}`));
         return;
       }
       if (!link) {
@@ -305,10 +277,15 @@ export class Relay {
         bridge = String(run.address).includes("/") ? String(run.address) : `${o.machine}/${run.address}`;
         // Ended while core started it: kill it now that its address is known.
         if (ended) return release();
-        const stream = await c.attach(bridge);
-        if (ended) return release();
+        const stream = await c.attach(bridge, { timeoutMs: CALL_TIMEOUT_MS });
+        if (ended) {
+          stream.close("the connection ended");
+          return release();
+        }
+        attached = stream;
         const rest = await this.sync(stream);
         if (ended) return;
+        freeSlot();
         const l = new Link((line) => stream.write(Buffer.from(line, "latin1")), o.times);
         link = l;
         l.onBroken = (why) => end(CLOSE_RESYNC, `link: ${why}`);
@@ -327,7 +304,7 @@ export class Relay {
     };
   }
 
-  /** Waits for the bridge's READY, then SYNC until SYNCED: what came before is the terminal's, not ours. */
+  /** Waits for the bridge's READY, then SYNC until SYNCED or NOHOST: what came before READY is the terminal's, not ours. */
   private async sync(stream: Stream): Promise<Buffer> {
     const nonce = randomBytes(12).toString("hex");
     let seen = "";
@@ -340,8 +317,9 @@ export class Relay {
     stream.onClose = (why) => reject(new Error(`bridge ended before sync: ${why}`));
     stream.onData = (d) => {
       seen = (seen + d.toString("latin1")).slice(-PRESYNC_MAX);
+      // NOHOST before READY (no live host in the registry) or after it (its socket refused the bridge).
+      if (seen.includes(NOHOST_LINE)) return reject(new NoHost("no host: the bridge found none"));
       if (!ready) {
-        if (seen.includes(NOHOST_LINE)) return reject(new NoHost("no host: the bridge found none"));
         if (!seen.includes(READY_LINE)) return;
         ready = true;
         seen = "";

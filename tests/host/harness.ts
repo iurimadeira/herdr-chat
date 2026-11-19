@@ -1,6 +1,6 @@
 // Test harness: the real host process, a real TCP client, fake-pi or real Pi.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -11,6 +11,21 @@ import { readRegistry } from "../../host/registry.ts";
 
 // macOS caps a Unix socket path at 104 bytes and its tmpdir() alone is ~50.
 export const TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
+
+/**
+ * The TCP addresses `pid` listens on (`127.0.0.1:5000`), by `lsof` (macOS, most Linux), else `ss`;
+ * null when neither can tell, for the test to skip that check rather than pass it empty.
+ */
+export function tcpListening(pid: number): string[] | null {
+  const lsof = spawnSync("lsof", ["-w", "-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-Fn"], { encoding: "utf8" });
+  // Exit 1 with no output: nothing matched.
+  if (!lsof.error && (lsof.status === 0 || (lsof.status === 1 && !lsof.stdout.trim()))) {
+    return lsof.stdout.split("\n").filter((l) => l.startsWith("n")).map((l) => l.slice(1));
+  }
+  const ss = spawnSync("ss", ["-ltnpH"], { encoding: "utf8" });
+  if (ss.error || ss.status !== 0) return null;
+  return ss.stdout.split("\n").filter((l) => l.includes(`pid=${pid},`)).map((l) => l.trim().split(/\s+/)[3]!);
+}
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const FAKE_PI = join(ROOT, "tests", "fake-pi", "fake-pi.mjs");

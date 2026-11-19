@@ -2,12 +2,14 @@
 // (relay.ts), and joins that terminal's PTY to the host's Unix socket. Records cross the PTY in the
 // link protocol (relaylink.ts); the host sees an ordinary JSONL client.
 //
-// It connects to the host first: no host there, it prints NOHOST and exits (the relay closes the
-// mod 4004, no host). Then READY, and SYNC must come within deadMs. It exits when the host socket closes, when
-// the link breaks, when no line came for deadMs (the relay is gone), or when it is killed.
+// No live host in the registry: it says NOHOST (the relay closes the mod 4004, no host). Else READY,
+// and SYNC must come within deadMs; then it connects to the host's socket (NOHOST when it can't) and
+// answers SYNCED. It exits when the host socket closes, when the link breaks, when no line came for
+// deadMs (the relay is gone), or when it is killed.
 import { execFileSync } from "node:child_process";
 import { writeSync } from "node:fs";
 import { connect } from "node:net";
+import type { Socket } from "node:net";
 import { join } from "node:path";
 import { LineFramer } from "./framing.ts";
 import { pidAlive, readRegistry, socketPath } from "./registry.ts";
@@ -19,6 +21,8 @@ import { cappedLog } from "./logfile.ts";
 const HOLD = 4 << 20;
 const PRESYNC_MAX = 64 * 1024;
 const EXIT_DRAIN_MS = 2000;
+/** READY (or NOHOST) goes out again this often until the relay answers. */
+const ANNOUNCE_MS = 250;
 
 export function runBridge(opts: { chat: string; stateDir: string; times: LinkTimes }): void {
   const log = cappedLog(join(opts.stateDir, "chats", `${opts.chat}.bridge.log`), () => `[${process.pid}] `);
@@ -81,7 +85,6 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
   }) as typeof process.stderr.write;
   process.on("uncaughtException", (e) => exit(7, `uncaught: ${e?.stack ?? e}`));
   process.on("unhandledRejection", (e) => exit(7, `unhandled rejection: ${(e as Error)?.stack ?? e}`));
-  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) process.on(sig, () => exit(0, sig));
 
   // Raw: no echo, no CR added, no signal keys; Node's raw mode keeps ONLCR, stty doesn't.
   try {
@@ -90,45 +93,67 @@ export function runBridge(opts: { chat: string; stateDir: string; times: LinkTim
     exit(2, `stty: ${e instanceof Error ? e.message : e}`);
   }
 
-  log(`bridge chat=${opts.chat}`);
-  const entry = readRegistry(opts.stateDir, opts.chat);
-  const pid = entry?.pid;
-  if (!pid || !pidAlive(pid)) {
+  // Until it is killed, its input ends or deadMs pass, it says NOHOST again and again: the relay's
+  // attach may land after the first one (a slow link), and a bridge that had exited would leave it
+  // nothing to attach to.
+  let nohost: string | null = null;
+  const noHost = (why: string): void => {
+    nohost = why;
+    clearInterval(announce);
+    clearTimeout(deadline);
     out(NOHOST_LINE + "\n");
-    return exit(4, "no host serves the chat");
-  }
-  // The path this host's pid names, not whatever the entry says.
-  const sock = connect(socketPath(opts.stateDir, opts.chat, pid));
-  sock.pause();
+    setInterval(() => out(NOHOST_LINE + "\n"), ANNOUNCE_MS);
+    setTimeout(() => exit(4, `${why} (no relay in ${opts.times.deadMs} ms)`), opts.times.deadMs);
+  };
+  const ended = (why: string): never => (nohost ? exit(4, `${nohost} (${why})`) : exit(0, why));
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) process.on(sig, () => ended(sig));
+
   let link: Link | null = null;
-  let connected = false;
-  sock.on("error", (e) => {
-    // Only a host that can't be reached is "no host"; a socket error once connected is not.
-    if (!connected) out(NOHOST_LINE + "\n");
-    exit(connected ? 5 : 4, `host socket: ${e.message}`);
-  });
-  sock.on("close", () => exit(0, "host socket closed"));
+  let announce: NodeJS.Timeout | undefined;
+  let deadline: NodeJS.Timeout | undefined;
+  let pre = "";
+  const presync = (d: Buffer): void => {
+    if (nohost || !announce) return;
+    // Before SYNC anything may arrive (a key, a terminal's reply): look for the line only.
+    pre = (pre + d.toString("latin1")).slice(-PRESYNC_MAX);
+    const m = SYNC_RE.exec(pre);
+    if (!m) return;
+    clearInterval(announce);
+    announce = undefined;
+    connectHost(m[1]!, Buffer.from(pre.slice(m.index + m[0].length), "latin1"));
+  };
+  process.stdin.on("data", (d: Buffer) => (link ? link.push(d) : presync(d)));
+  process.stdin.on("end", () => ended("terminal input ended"));
 
-  sock.on("connect", () => {
-    connected = true;
-    out(READY_LINE + "\n");
-    const deadline = setTimeout(() => exit(8, `no sync in ${opts.times.deadMs} ms`), opts.times.deadMs);
-    let pre = "";
-    const presync = (d: Buffer): void => {
-      // Before SYNC anything may arrive (a key, a terminal's reply): look for the line only.
-      pre = (pre + d.toString("latin1")).slice(-PRESYNC_MAX);
-      const m = SYNC_RE.exec(pre);
-      if (!m) return;
+  log(`bridge chat=${opts.chat}`);
+  const pid = readRegistry(opts.stateDir, opts.chat)?.pid;
+  if (!pid || !pidAlive(pid)) return noHost("no host serves the chat");
+  // READY until SYNC, as the relay's attach may land after the first one.
+  out(READY_LINE + "\n");
+  announce = setInterval(() => out(READY_LINE + "\n"), ANNOUNCE_MS);
+  deadline = setTimeout(() => exit(8, `no sync in ${opts.times.deadMs} ms`), opts.times.deadMs);
+
+  // The host's socket only once SYNC came: the host's hello timeout starts at the connect, and the
+  // relay sends the mod's hello right after SYNCED, however long the relay's setup took.
+  const connectHost = (nonce: string, rest: Buffer): void => {
+    // The path this host's pid names, not whatever the entry says.
+    const sock = connect(socketPath(opts.stateDir, opts.chat, pid));
+    sock.pause();
+    let connected = false;
+    sock.on("error", (e) => {
+      // Only a host that can't be reached is "no host"; a socket error once connected is not.
+      if (!connected) return noHost(`no host serves the chat (host socket: ${e.message})`);
+      exit(5, `host socket: ${e.message}`);
+    });
+    sock.on("close", () => connected && exit(0, "host socket closed"));
+    sock.on("connect", () => {
       clearTimeout(deadline);
-      const rest = Buffer.from(pre.slice(m.index + m[0].length), "latin1");
-      pre = "";
-      start(m[1]!, rest);
-    };
-    process.stdin.on("data", (d: Buffer) => (link ? link.push(d) : presync(d)));
-    process.stdin.on("end", () => exit(0, "terminal input ended"));
-  });
+      connected = true;
+      start(sock, nonce, rest);
+    });
+  };
 
-  const start = (nonce: string, rest: Buffer): void => {
+  const start = (sock: Socket, nonce: string, rest: Buffer): void => {
     const l = new Link(out, opts.times);
     link = l;
     let fills = 0;
