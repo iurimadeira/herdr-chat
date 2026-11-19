@@ -62,8 +62,10 @@ test("relay lock: many relays started at once over a SIGKILLed holder: exactly o
   for (let round = 0; round < 6; round++) {
     await kill9(holder);
     const rs = Array.from({ length: 8 }, () => relay(dir));
-    // The losers exit; the winner keeps serving.
-    await sleep(3000);
+    // The losers exit; the winner keeps serving (and stays up a while after).
+    const t0 = Date.now();
+    while (rs.filter((r) => r.proc.exitCode === null).length > 1 && Date.now() - t0 < 30_000) await sleep(50);
+    await sleep(500);
     const live = rs.filter((r) => r.proc.exitCode === null);
     assert.equal(live.length, 1, `round ${round}: ${live.length} relays serve machine m\n${rs.map((r) => r.out()).join("\n")}`);
     for (const r of rs.filter((x) => x !== live[0])) assert.match(r.out(), /already serves machine m/);
@@ -94,6 +96,26 @@ test("relay lock: a stopped relay frees the machine at once; a holder whose pid 
   await serving(dir, r3);
   r3.proc.kill("SIGTERM");
   assert.equal(await r3.exited, 0);
+});
+
+test("relay lock: a live relay holds the machine against 40 challengers over several seconds", async () => {
+  const dir = stateDir();
+  const r1 = relay(dir);
+  await serving(dir, r1);
+  const all: R[] = [];
+  for (let wave = 0; wave < 8; wave++) {
+    for (let i = 0; i < 5; i++) all.push(relay(dir));
+    await sleep(700);
+  }
+  const codes = await Promise.all(all.map((r) => r.exited));
+  for (const [i, r] of all.entries()) {
+    assert.notEqual(codes[i], 0, r.out());
+    assert.match(r.out(), new RegExp(`relay pid ${r1.proc.pid} already serves machine m`));
+  }
+  assert.equal(entry(dir)?.pid, r1.proc.pid);
+  assert.equal(r1.proc.exitCode, null);
+  r1.proc.kill("SIGTERM");
+  assert.equal(await r1.exited, 0);
 });
 
 test("relay lock: a live relay's lock is honoured, whatever else is in the directory", async () => {

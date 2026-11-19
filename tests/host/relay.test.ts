@@ -726,7 +726,7 @@ test("relay: 8 setups at once, the ninth busy (1013); an attach core never answe
   }
 });
 
-test("relay: over 1 MiB from the mod before its token is checked closes 4003, and its bridge goes", async (t) => {
+test("relay: over 1 MiB from the mod before its link is up closes 4003, and its bridge goes", async (t) => {
   if (skipped(t)) return;
   const h = await host();
   // The attach never answers: the link never comes up, so everything after the hello is held.
