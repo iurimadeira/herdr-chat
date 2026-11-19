@@ -31,3 +31,17 @@ Append-only. Rules live in `CONTEXT.md`; this log records why.
   still has the last word. Rejected: resuming in the host's own home (the
   session, its registry and its login are in another home, so the resume
   fails or runs under another account); herdr-chat routing the account itself.
+
+## 2026-11-18 — Remote transport rides herdr-core's machine link (supersedes the two transport entries above)
+
+- **The mod reaches a remote host only through herdr-core's own machine
+  link.** Path: mod → WebSocket on 127.0.0.1 (token) → relay process on the
+  Mac → core `terminal.attach` on `machine/tN` → remote core → raw-mode bridge
+  terminal → host over a Unix socket (0600). herdr-chat never knows how the
+  machine is reached (ssh, `--via`, VPN). Nothing listens on a network port on
+  the remote machine. Rejected: a direct WebSocket over a tailnet or other
+  routable address (ties the plugin to one network); `ssh -L`; `exec`/`hc`
+  streaming (return only at exit); the `hc attach` CLI (needs a TTY, owns
+  ctrl+\).
+- **Chat bytes are kept in the remote core's screen and history.** Accepted:
+  trust equals access to that core, the same exposure the agent's TUI has.
