@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.0](https://github.com/iurimadeira/herdr-chat/compare/v0.5.0...v0.6.0) (2026-11-19)
+
+
+### Features
+
+* **host:** continue as chat finds the session in the agent home the TUI uses ([d226116](https://github.com/iurimadeira/herdr-chat/commit/d2261165f0bb962ddbb19373ed3468abf057a0ca)), closes [#9](https://github.com/iurimadeira/herdr-chat/issues/9)
+* **host:** relay and bridge carry a remote chat over herdr-core's machine link ([0fa0076](https://github.com/iurimadeira/herdr-chat/commit/0fa007631d38f35e63c85da41b4031b08e4830dd)), closes [#19](https://github.com/iurimadeira/herdr-chat/issues/19)
+* **host:** serve the chat on a 0600 Unix socket beside its registry entry ([3e9b704](https://github.com/iurimadeira/herdr-chat/commit/3e9b7040ce159a09b08824d79d430e0a3888c14a)), closes [#19](https://github.com/iurimadeira/herdr-chat/issues/19)
+* **install:** --host-only installs the host and chat templates on a machine without the Herdr app ([b6676d1](https://github.com/iurimadeira/herdr-chat/commit/b6676d1767f6d3f909bfe3e6221ad0a47fde3c77)), closes [#14](https://github.com/iurimadeira/herdr-chat/issues/14)
+* **install:** install.sh --host-only installs the chat host without the Herdr app ([7b3227c](https://github.com/iurimadeira/herdr-chat/commit/7b3227caf34a975747da59414a6a6203e2408ec0))
+* remote chats ride herdr-core's machine link through a relay and a bridge ([b65ede5](https://github.com/iurimadeira/herdr-chat/commit/b65ede53cd8cf2cbf496b02e78027c8e8fb55725))
+
+
+### Bug Fixes
+
+* **chat:** a continued chat's agent home reaches /tui, /login, new chats and restores ([c083b3b](https://github.com/iurimadeira/herdr-chat/commit/c083b3ba33c1711b3c48ec1078641e2b9d3841f0)), closes [#9](https://github.com/iurimadeira/herdr-chat/issues/9)
+* continue as chat uses the agent home the TUI runs in ([3b33027](https://github.com/iurimadeira/herdr-chat/commit/3b330276a84fddc49ab0d5ef2b05e9484867fc6a))
+* **host:** 4003 only for a client that never gets in; no host is 4004, a failed registry read 1011 ([c42b993](https://github.com/iurimadeira/herdr-chat/commit/c42b993072a319a8e7b98dbb8af6925a956526ca)), closes [#19](https://github.com/iurimadeira/herdr-chat/issues/19)
+* **host:** a relay connection frees its setup slot when it ends ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([efd9ec8](https://github.com/iurimadeira/herdr-chat/commit/efd9ec89f4253d1c0e410b6b497fb5d725f6ba5e))
+* **host:** a slow link connects; a bridge's READY and NOHOST outlast a late attach ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([0e7add6](https://github.com/iurimadeira/herdr-chat/commit/0e7add626f90cd8dfa1072b7f935298934714264))
+* **host:** an environment ps doesn't show leaves the host's agent home on macOS ([fb0fa73](https://github.com/iurimadeira/herdr-chat/commit/fb0fa73cdd522f8cf183594834afb47c4a8c5683)), closes [#9](https://github.com/iurimadeira/herdr-chat/issues/9)
+* **host:** an exiting bridge queues nothing new, so its PTY drain ends ([0694278](https://github.com/iurimadeira/herdr-chat/commit/0694278bbe94fbb28a41254d05d03de95ac00f81)), closes [#19](https://github.com/iurimadeira/herdr-chat/issues/19)
+* **host:** an over-long socket path fails with a clear error ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([63d3300](https://github.com/iurimadeira/herdr-chat/commit/63d33009f10d065f7cde7ebbf7ac19606029b01b))
+* **host:** continue as chat runs the chat's agent in the TUI's agent home ([f967d11](https://github.com/iurimadeira/herdr-chat/commit/f967d11a4550c7c5b03910c79588f6dee339eb26)), closes [#9](https://github.com/iurimadeira/herdr-chat/issues/9)
+* **host:** one relay per machine under races and reused pids ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([ad6c1ad](https://github.com/iurimadeira/herdr-chat/commit/ad6c1adf744dfa2709fe1f1dd0096f3ec56c43ff))
+* **host:** relay lock fails closed on unknown start times, withdraws a swept claim ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([002d2a3](https://github.com/iurimadeira/herdr-chat/commit/002d2a337f695455c6c4aca8fda0c7e8bfd74a7d))
+* **host:** review of the relay and bridge: socket-only remote hosts, no leaked bridges, refusals that end ([6e2aed2](https://github.com/iurimadeira/herdr-chat/commit/6e2aed23667c51b4635b8a594287fa86ebab24aa))
+* **host:** review remediation for relay robustness ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([9ea19f1](https://github.com/iurimadeira/herdr-chat/commit/9ea19f11899fd8e8c0f7c021ce1ed043732c59dd))
+* **host:** the core client forgets ended streams and bounds attach ([#23](https://github.com/iurimadeira/herdr-chat/issues/23)) ([515a0bf](https://github.com/iurimadeira/herdr-chat/commit/515a0bf0c27f05aa6e5b6530de9de9ba0c870e54))
+* **install:** --host-only writes no templates and refuses a release of the other target ([e04cbb6](https://github.com/iurimadeira/herdr-chat/commit/e04cbb64952f4f94b423633f1f50f581bd1460fc)), closes [#14](https://github.com/iurimadeira/herdr-chat/issues/14)
+* relay and bridge survive slow links, stalled cores and racing starts ([3c60bab](https://github.com/iurimadeira/herdr-chat/commit/3c60babccffecdda9f846c64d950e6011ef0c216))
+
 ## [0.5.0](https://github.com/ChmaraX/herdr-chat/compare/v0.4.0...v0.5.0) (2026-11-17)
 
 
